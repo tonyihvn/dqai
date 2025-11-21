@@ -157,7 +157,20 @@ const RolesList: React.FC = () => {
     const [allPerms, setAllPerms] = useState<any[]>([]);
     const [rolePerms, setRolePerms] = useState<number[]>([]);
 
-    useEffect(() => { (async () => { try { const r = await fetch('/api/admin/roles', { credentials: 'include' }); if (r.ok) setList(await r.json()); const pr = await fetch('/api/admin/permissions', { credentials: 'include' }); if (pr.ok) setAllPerms(await pr.json()); } catch (e) { console.error(e); } })(); }, []);
+    useEffect(() => {
+        (async () => {
+            try {
+                // Try admin endpoints first; if unauthorized, fall back to public endpoints
+                let r = await fetch('/api/admin/roles', { credentials: 'include' });
+                if (r.status === 401) r = await fetch('/api/roles');
+                if (r.ok) setList(await r.json());
+
+                let pr = await fetch('/api/admin/permissions', { credentials: 'include' });
+                if (pr.status === 401) pr = await fetch('/api/permissions');
+                if (pr.ok) setAllPerms(await pr.json());
+            } catch (e) { console.error(e); }
+        })();
+    }, []);
 
     const refreshRoles = async () => { const r = await fetch('/api/admin/roles', { credentials: 'include' }); if (r.ok) setList(await r.json()); };
 
@@ -257,8 +270,8 @@ const UsersList: React.FC = () => {
     };
     const fetchRoles = async () => {
         try {
-            const r = await fetch('/api/admin/roles', { credentials: 'include' });
-            if (r.status === 401) return; // can't list roles without auth
+            let r = await fetch('/api/admin/roles', { credentials: 'include' });
+            if (r.status === 401) r = await fetch('/api/roles');
             if (r.ok) setRoles(await r.json());
         } catch (e) { console.error(e); }
     };
@@ -369,7 +382,15 @@ const PermissionsList: React.FC = () => {
     const [name, setName] = useState('');
     const [desc, setDesc] = useState('');
     const [manualEntry, setManualEntry] = useState(false);
-    useEffect(() => { (async () => { try { const r = await fetch('/api/admin/permissions', { credentials: 'include' }); if (r.ok) setList(await r.json()); } catch (e) { } })(); }, []);
+    useEffect(() => {
+        (async () => {
+            try {
+                let r = await fetch('/api/admin/permissions', { credentials: 'include' });
+                if (r.status === 401) r = await fetch('/api/permissions');
+                if (r.ok) setList(await r.json());
+            } catch (e) { /* ignore */ }
+        })();
+    }, []);
     const save = async (id?: number) => { try { const payload = id ? { id, name, description: desc } : { name, description: desc }; const r = await fetch('/api/admin/permissions', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (r.ok) setList(await (await fetch('/api/admin/permissions', { credentials: 'include' })).json()); setName(''); setDesc(''); setManualEntry(false); } catch (e) { alert('Failed'); } };
 
     // Build dropdown options from appRoutes and existing permission names
@@ -594,14 +615,7 @@ const SettingsPage: React.FC = () => {
                         <div className="mt-2">
                             <label className="inline-flex items-center"><input type="checkbox" checked={(settings as any).ragAutoGenerate || false} onChange={e => setSettings({ ...(settings as any), ragAutoGenerate: e.target.checked })} className="mr-2" />Enable automatic schema generation</label>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">Context Window Size</label>
-                            <input type="number" className="mt-1 block w-32 p-2 border rounded" value={(settings as any).ragContextWindow || 5} onChange={e => setSettings({ ...(settings as any), ragContextWindow: Number(e.target.value) })} />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">Preview Generated Rules</label>
-                            <textarea className="mt-1 block w-full p-2 border rounded" rows={6} value={(settings as any).ragPreview || ''} onChange={e => setSettings({ ...(settings as any), ragPreview: e.target.value })} />
-                        </div>
+                        {/* Removed Context Window Size and Preview Generated Rules per user request — RAG records must include explicit Business Rules */}
                         <RagManager />
                     </div>
                 </Card>
@@ -776,16 +790,13 @@ const RagManager: React.FC = () => {
 
     useEffect(() => { load(); }, []);
 
-    useEffect(() => {
-        if (editing && nameRef.current) {
-            try { nameRef.current.focus(); } catch (e) { }
-        }
-    }, [editing]);
+    // NOTE: removed automatic focus on table_name to avoid refocusing while editing/creating records
 
     const startCreate = () => setEditing({ table_name: '', schema: [], sample_rows: [] });
 
     const save = async () => {
         if (!editing || !editing.table_name) return alert('Table name required');
+        if (!editing.business_rules || !String(editing.business_rules).trim()) return alert('Business Rules (natural language) are required for every RAG record');
         try {
             const payload = { ...editing };
             // POST to admin endpoint (requires auth)

@@ -79,10 +79,13 @@ const RenderQuestion = ({ question, value, onChange }: { question: Question, val
                 </div>
             );
         case AnswerType.COMPUTED:
-            // Show computed/calculated value as read-only output
+            // Show computed/calculated value as read-only output. Hide raw JS code if present.
+            let displayValue = value;
+            if (typeof displayValue === 'function') displayValue = null;
+            if (typeof displayValue === 'string' && /=>|function\s*\(/.test(displayValue)) displayValue = null;
             return (
                 <div className="bg-gray-100 border border-gray-200 rounded px-3 py-2 text-gray-700">
-                    <span className="font-semibold">{question.questionText}:</span> <span>{value === undefined || value === null || value === '' ? <span className="italic text-gray-400">(no value)</span> : value}</span>
+                    <span className="font-semibold">{question.questionText}:</span> <span>{displayValue === undefined || displayValue === null || displayValue === '' ? <span className="italic text-gray-400">(no value)</span> : displayValue}</span>
                 </div>
             );
         default:
@@ -277,6 +280,9 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
             return;
         }
 
+        // prepare upload payload mapping fileName -> filename and data -> content
+        const mappedUploads = uploadedFiles.map(f => ({ filename: f.fileName || f.filename || f.fileName || `uploaded_${Date.now()}`, content: f.data || f.data || f }));
+
         if (editingReport) {
             const updated: ActivityReport = {
                 ...editingReport,
@@ -287,7 +293,7 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
                 status: 'Completed',
                 preparedBy: currentUser?.id || editingReport.preparedBy || 'unknown',
                 answers: answers,
-                uploadedFiles: uploadedFiles,
+                uploadedFiles: mappedUploads,
                 submissionDate: new Date().toISOString(),
             };
             saveReport(updated);
@@ -303,7 +309,7 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
                 status: 'Completed',
                 preparedBy: currentUser?.id || 'unknown',
                 answers: answers,
-                uploadedFiles: uploadedFiles,
+                uploadedFiles: mappedUploads,
                 submissionDate: new Date().toISOString(),
             }
             saveReport(report);
@@ -521,8 +527,12 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
                             <div>
                                 {uploadedFiles.map(file => (
                                     <Card key={file.id} className="border border-gray-200 mb-4">
-                                        <div className="flex justify-between items-start">
+                                        <div className="flex justify-between items-start gap-4">
                                             <div className="flex-1">
+                                                <div className="mb-2">
+                                                    <label className="block text-xs text-gray-600">File Title</label>
+                                                    <input className="p-2 border rounded w-full" value={file.fileName || ''} onChange={e => setUploadedFiles(prev => prev.map(f => f.id === file.id ? { ...f, fileName: e.target.value } : f))} placeholder="Enter title for this file" />
+                                                </div>
                                                 <EditableTable file={file} onUpdate={handleFileUpdate} />
                                             </div>
                                             <div className="ml-4">

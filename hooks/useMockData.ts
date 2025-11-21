@@ -1,5 +1,6 @@
 
 import React, { createContext, useContext, useState, useEffect, createElement, ReactNode, FC } from 'react';
+import { addAuditEvent, flushAudit } from './useAudit';
 import { Program, Activity, Facility, User, ActivityReport, FormDefinition } from '../types';
 
 // Context Definition
@@ -145,6 +146,8 @@ export const DataProvider: FC<{ children: ReactNode }> = ({ children }) => {
                 const user = await res.json();
                 setCurrentUser(user);
                 try { localStorage.setItem('intelliform_current_user', JSON.stringify(user)); } catch (e) { }
+                // record login event locally and try to flush
+                try { addAuditEvent({ type: 'login', userId: user.id, email: user.email, method: 'password' }); await flushAudit(user.id); } catch (e) { /* ignore */ }
                 window.location.href = '#/dashboard';
             } else {
                 const txt = await res.text();
@@ -178,6 +181,11 @@ export const DataProvider: FC<{ children: ReactNode }> = ({ children }) => {
                     if (exists) return prev.map(p => p[idField] === saved[idField] ? saved : p);
                     return [...prev, saved];
                 });
+                try {
+                    addAuditEvent({ type: 'crud', action: 'save', resource: url, id: saved[idField], userId: currentUser?.id || null });
+                    // best-effort flush
+                    await flushAudit(currentUser?.id);
+                } catch (e) { /* ignore */ }
             } else {
                 console.error('Save failed', await res.text());
             }
@@ -188,6 +196,7 @@ export const DataProvider: FC<{ children: ReactNode }> = ({ children }) => {
         try {
             await fetch(`${url}/${id}`, { method: 'DELETE', credentials: 'include' });
             setter(prev => prev.filter(p => String(p.id) !== String(id)));
+            try { addAuditEvent({ type: 'crud', action: 'delete', resource: url, id, userId: currentUser?.id || null }); await flushAudit(currentUser?.id); } catch (e) { }
         } catch (e) { console.error(e); }
     };
 

@@ -26,7 +26,7 @@ const ReportViewPage: React.FC = () => {
         const [aRes, qRes, docs] = await Promise.all([
           fetch(`http://localhost:3000/api/answers?reportId=${reportId}`, { credentials: 'include' }),
           fetch(`http://localhost:3000/api/questions?activityId=${jr.activity_id}`, { credentials: 'include' }),
-          fetch(`http://localhost:3000/api/uploaded_docs?activityId=${jr.activity_id}`, { credentials: 'include' })
+          fetch(`http://localhost:3000/api/uploaded_docs?reportId=${jr.id}`, { credentials: 'include' })
         ]);
         if (aRes.ok) setAnswers(await aRes.json() || []);
         if (qRes.ok) setQuestions(await qRes.json() || []);
@@ -144,10 +144,6 @@ const ReportViewPage: React.FC = () => {
           } else if (activityResponseType === 'user') {
             filterKey = 'user_id'; filterVal = report.user_id || report.userId;
           }
-          const filteredDocs = uploadedDocs.filter((d: any) => {
-            if (!filterKey) return true;
-            return String(d[filterKey]) === String(filterVal);
-          });
           return filteredDocs.map(d => {
             const rows = Array.isArray(d.file_content) ? d.file_content : [];
             const colsSet = new Set<string>();
