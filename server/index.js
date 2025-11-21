@@ -28,6 +28,11 @@ app.use(
     })
 );
 
+// Serve uploaded files (images/videos) from /uploads
+const uploadsRoot = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
+app.use('/uploads', express.static(uploadsRoot));
+
 // LLM SQL generation endpoint (provider dispatch + fallback)
 async function tryCallProvider(providerRow, prompt, ragContext) {
     try {
@@ -104,6 +109,7 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         const ragRows = rres.rows || [];
 
         const tokens = (String(prompt).toLowerCase().match(/\w+/g) || []);
+        const lowerPrompt = String(prompt).toLowerCase();
         const scored = ragRows.map(r => {
             const table = (r.table_name || '').toString().toLowerCase();
             const cols = (r.schema || []).map(c => (c.column_name || c.name || '').toString().toLowerCase());
@@ -117,6 +123,17 @@ app.post('/api/llm/generate_sql', async (req, res) => {
                     else if (c.includes(t)) score += 1;
                 }
             }
+            // Heuristics for statistical/score queries: boost schemas that contain score-like columns
+            try {
+                if (/\b(total|total score|overall score|score|sum|average|avg|mean)\b/.test(lowerPrompt)) {
+                    const lowCols = cols;
+                    if (lowCols.includes('overall_score') || lowCols.includes('overallscore')) score += 80;
+                    if (lowCols.includes('score') || lowCols.includes('scores') || lowCols.includes('score_value')) score += 50;
+                    if (lowCols.some(c => c.includes('answer') || c.includes('answer_value') || c.includes('answers'))) score += 40;
+                    if (table.includes('report')) score += 30;
+                    if (table.includes('answer') || table.includes('answers')) score += 30;
+                }
+            } catch (e) { }
             return { r, score, cols };
         });
 
@@ -150,7 +167,12 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         }
 
         // Include any RAG records marked as 'Compulsory' into the LLM context so the model always sees them
-        const compulsoryRags = (ragRows || []).filter(rr => String(rr.category || '').toLowerCase() === 'compulsory');
+        let compulsoryRags = (ragRows || []).filter(rr => String(rr.category || '').toLowerCase() === 'compulsory');
+        // If no explicit compulsory entries exist, prefer core tables that are likely required for SQL generation
+        if (!compulsoryRags || compulsoryRags.length === 0) {
+            const coreNames = ['dqai_activity_reports', 'dqai_answers', 'dqai_questions'];
+            compulsoryRags = ragRows.filter(rr => coreNames.includes(((rr.table_name || '')).toString()));
+        }
         let compulsoryContext = '';
         if (compulsoryRags.length) {
             // Prefer using a short human-readable summary if available
@@ -2228,6 +2250,81 @@ app.get('/api/reports/:id', async (req, res) => {
             reportedBy: r.reported_by
         });
     } catch (e) { res.status(500).send(e.message); }
+});
+
+// Update a report (reviewers_report, overall_score, status)
+app.put('/api/reports/:id', async (req, res) => {
+    try {
+        const { reviewers_report, overall_score, status } = req.body || {};
+        const fields = [];
+        const params = [];
+        let idx = 1;
+        if (reviewers_report !== undefined) { fields.push(`reviewers_report = $${idx++}`); params.push(reviewers_report); }
+        if (overall_score !== undefined) { fields.push(`overall_score = $${idx++}`); params.push(overall_score); }
+        if (status !== undefined) { fields.push(`status = $${idx++}`); params.push(status); }
+        if (fields.length === 0) return res.status(400).send('No fields to update');
+        params.push(req.params.id);
+        const sql = `UPDATE dqai_activity_reports SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`;
+        const result = await pool.query(sql, params);
+        if (result.rowCount === 0) return res.status(404).send('Report not found');
+        const r = result.rows[0];
+        res.json({
+            ...r,
+            activityId: r.activity_id,
+            userId: r.user_id,
+            facilityId: r.facility_id,
+            submissionDate: r.submission_date,
+            reviewersReport: r.reviewers_report,
+            overallScore: r.overall_score,
+            reportedBy: r.reported_by
+        });
+    } catch (e) { res.status(500).send(e.message); }
+});
+
+// Accept base64 media uploads for reviews (images/videos). Body: { reportId, filename, contentBase64, mimeType }
+app.post('/api/review_uploads', async (req, res) => {
+    try {
+        const { reportId, filename, contentBase64, mimeType } = req.body || {};
+        if (!reportId || !filename || !contentBase64) return res.status(400).send('Missing parameters');
+        const safeReportId = String(reportId).replace(/[^a-zA-Z0-9-_\.]/g, '_');
+        const folder = path.join(uploadsRoot, 'reports', String(safeReportId));
+        if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+        const ts = Date.now();
+        const ext = path.extname(filename) || '';
+        const baseName = path.basename(filename, ext).replace(/[^a-zA-Z0-9-_\.]/g, '_');
+        const savedName = `${ts}_${baseName}${ext}`;
+        const filePath = path.join(folder, savedName);
+        // contentBase64 may be a data URL or raw base64
+        let base64 = contentBase64;
+        const comma = base64.indexOf(',');
+        if (comma !== -1) base64 = base64.slice(comma + 1);
+        const buf = Buffer.from(base64, 'base64');
+        fs.writeFileSync(filePath, buf);
+        const publicUrl = `${req.protocol}://${req.get('host')}/uploads/reports/${encodeURIComponent(String(safeReportId))}/${encodeURIComponent(savedName)}`;
+        res.json({ url: publicUrl, path: filePath });
+    } catch (e) {
+        console.error('review_uploads error', e);
+        res.status(500).send(e.message);
+    }
+});
+
+// Delete a report and its associated uploaded docs and media files
+app.delete('/api/reports/:id', async (req, res) => {
+    const id = req.params.id;
+    try {
+        // delete uploaded_docs rows and filesystem
+        await pool.query('DELETE FROM dqai_uploaded_docs WHERE report_id = $1', [id]);
+        const folder = path.join(uploadsRoot, 'reports', String(id));
+        try { if (fs.existsSync(folder)) fs.rmSync(folder, { recursive: true, force: true }); } catch (e) { console.error('Failed to remove upload folder', e); }
+
+        // delete the report (answers cascade if DB has FK)
+        const result = await pool.query('DELETE FROM dqai_activity_reports WHERE id = $1 RETURNING *', [id]);
+        if (result.rowCount === 0) return res.status(404).send('Report not found');
+        res.json({ ok: true });
+    } catch (e) {
+        console.error('Failed to delete report', e);
+        res.status(500).send(e.message);
+    }
 });
 
 // Get uploaded_docs by activityId or facilityId or userId

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 
@@ -9,15 +9,23 @@ const QuestionFollowupPage: React.FC = () => {
   const [questions, setQuestions] = useState<any[]>([]);
   const [answers, setAnswers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const qReportId = params.get('reportId');
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [qRes, aRes] = await Promise.all([
-          fetch(`http://localhost:3000/api/questions?activityId=${activityId}`, { credentials: 'include' }),
-          fetch(`http://localhost:3000/api/answers?activityId=${activityId}`, { credentials: 'include' })
-        ]);
+        const qRes = await fetch(`http://localhost:3000/api/questions?activityId=${activityId}`, { credentials: 'include' });
         if (qRes.ok) setQuestions(await qRes.json());
+
+        // If reportId provided, fetch only answers for that report
+        let aRes;
+        if (qReportId) {
+          aRes = await fetch(`http://localhost:3000/api/answers?reportId=${qReportId}`, { credentials: 'include' });
+        } else {
+          aRes = await fetch(`http://localhost:3000/api/answers?activityId=${activityId}`, { credentials: 'include' });
+        }
         if (aRes.ok) setAnswers(await aRes.json());
       } catch (e) { console.error(e); }
       setLoading(false);

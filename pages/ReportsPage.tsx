@@ -93,7 +93,18 @@ const ReportsPage: React.FC = () => {
                       }
                       navigate(`${base}?${params.toString()}`);
                     }}>Edit Report Form</button>
-                    <button className="text-red-600 hover:text-red-900 flex items-center text-xs" onClick={() => alert('Delete Report coming soon')}>Delete</button>
+                    <button className="text-red-600 hover:text-red-900 flex items-center text-xs" onClick={async () => {
+                      if (!confirm('Delete this report and its uploaded files?')) return;
+                      try {
+                        const res = await fetch(`http://localhost:3000/api/reports/${report.id}`, { method: 'DELETE', credentials: 'include' });
+                        if (res.ok) {
+                          alert('Report deleted');
+                          window.location.reload();
+                        } else {
+                          alert('Failed to delete report');
+                        }
+                      } catch (e) { console.error(e); alert('Failed to delete report'); }
+                    }}>Delete</button>
                   </td>
                 </tr>
               ))}

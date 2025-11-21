@@ -4,6 +4,7 @@ import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import DataTable from '../components/ui/DataTable';
 import ConversationPanel from '../components/ui/ConversationPanel';
+import Modal from '../components/ui/Modal';
 
 const ReportViewPage: React.FC = () => {
   const { reportId } = useParams<{ reportId: string }>();
@@ -14,6 +15,76 @@ const ReportViewPage: React.FC = () => {
   const [uploadedDocs, setUploadedDocs] = useState<any[]>([]);
   const [questions, setQuestions] = useState<any[]>([]);
   const [search, setSearch] = useState('');
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [reviewContent, setReviewContent] = useState<string>(report?.reviewersReport || '');
+  const [reviewScore, setReviewScore] = useState<number | null>(report?.overallScore ?? null);
+  const [reviewStatus, setReviewStatus] = useState<string | null>(report?.status ?? null);
+
+  const saveReview = async () => {
+    if (!report) return;
+    try {
+      const payload: any = { reviewers_report: reviewContent, overall_score: reviewScore, status: reviewStatus };
+      const res = await fetch(`http://localhost:3000/api/reports/${report.id}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (res.ok) {
+        const updated = await res.json();
+        setReport(prev => ({ ...prev, reviewersReport: updated.reviewers_report || updated.reviewersReport, overallScore: updated.overall_score || updated.overallScore, status: updated.status || prev?.status }));
+        setReviewModalOpen(false);
+      } else {
+        alert('Failed to save review');
+      }
+    } catch (e) { console.error(e); alert('Failed to save review'); }
+  };
+
+  // insert HTML at caret in contentEditable
+  const insertHtmlAtCaret = (html: string) => {
+    const editor = document.getElementById('review-editor');
+    if (!editor) return;
+    editor.focus();
+    const sel = window.getSelection();
+    if (!sel || !sel.getRangeAt || sel.rangeCount === 0) {
+      editor.insertAdjacentHTML('beforeend', html);
+      setReviewContent((prev) => prev + html);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const el = document.createElement('div');
+    el.innerHTML = html;
+    const frag = document.createDocumentFragment();
+    let node, lastNode;
+    while ((node = el.firstChild)) {
+      lastNode = frag.appendChild(node);
+    }
+    range.insertNode(frag);
+    // move caret after inserted
+    if (lastNode) {
+      range.setStartAfter(lastNode);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    setReviewContent((editor as HTMLElement).innerHTML || '');
+  };
+
+  const uploadMedia = async (file: File) => {
+    if (!report) return null;
+    const reader = new FileReader();
+    return await new Promise<string | null>((resolve) => {
+      reader.onload = async (ev) => {
+        const dataUrl = ev.target?.result as string;
+        try {
+          const res = await fetch('http://localhost:3000/api/review_uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ reportId: report.id, filename: file.name, contentBase64: dataUrl, mimeType: file.type }) });
+          if (res.ok) {
+            const j = await res.json();
+            resolve(j.url);
+            return;
+          }
+        } catch (e) { console.error(e); }
+        resolve(null);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -36,6 +107,14 @@ const ReportViewPage: React.FC = () => {
     };
     load();
   }, [reportId]);
+
+  // sync review modal default values when report loads
+  useEffect(() => {
+    if (!report) return;
+    setReviewContent(report.reviewersReport || report.reviewers_report || '');
+    setReviewScore(report.overallScore ?? report.overall_score ?? null);
+    setReviewStatus(report.status || null);
+  }, [report]);
 
   if (loading) return <div>Loading...</div>;
   if (!report) return <div>Report not found.</div>;
@@ -94,8 +173,21 @@ const ReportViewPage: React.FC = () => {
           <Button onClick={handlePrintFormatted}>Download PDF</Button>
           <Button variant="secondary" onClick={handleEmail}>Forward via Email</Button>
           <Button variant="secondary" onClick={() => navigate(`/activities/${report.activity_id}/followups?reportId=${report.id}`)}>Edit Followups</Button>
+          {report?.status !== 'Completed' && (
+            <Button onClick={() => setReviewModalOpen(true)}>Add / Edit Review</Button>
+          )}
         </div>
       </div>
+
+      {/* Reviewer's report shown first */}
+      <Card>
+        <h2 className="text-lg font-semibold mb-2">Reviewer's Report</h2>
+        <div className="mb-2">
+          <div className="text-sm text-gray-700">Status: <span className="font-medium">{report.status || '—'}</span></div>
+          <div className="text-sm text-gray-700">Overall Score: <span className="font-medium">{report.overallScore ?? report.overall_score ?? '—'}</span></div>
+        </div>
+        <div className="prose max-w-full" dangerouslySetInnerHTML={{ __html: report.reviewersReport || report.reviewers_report || '<em>No review yet</em>' }} />
+      </Card>
 
       <Card>
         <h2 className="text-lg font-semibold mb-2">Submitted Answers</h2>
@@ -144,6 +236,27 @@ const ReportViewPage: React.FC = () => {
           } else if (activityResponseType === 'user') {
             filterKey = 'user_id'; filterVal = report.user_id || report.userId;
           }
+          // Only include uploaded docs that belong to this report and have non-empty content
+          const filteredDocs = (uploadedDocs || []).filter(d => {
+            if (!d) return false;
+            const rpt = (d.report_id ?? d.reportId ?? d.report) || null;
+            if (String(rpt) !== String(report.id)) return false;
+            const content = d.file_content || d.fileContent || d.data || null;
+            if (!content) return false;
+            if (Array.isArray(content) && content.length === 0) return false;
+            return true;
+          }).filter(d => {
+            if (!search) return true;
+            const s = search.toLowerCase();
+            const fname = String(d.filename || d.fileName || '');
+            if (fname.toLowerCase().includes(s)) return true;
+            try {
+              const cont = JSON.stringify(d.file_content || d);
+              if (cont.toLowerCase().includes(s)) return true;
+            } catch (e) { }
+            return false;
+          });
+
           return filteredDocs.map(d => {
             const rows = Array.isArray(d.file_content) ? d.file_content : [];
             const colsSet = new Set<string>();
@@ -230,6 +343,65 @@ const ReportViewPage: React.FC = () => {
           });
         })()}
       </Card>
+
+      {/* Review modal with toolbar and media upload */}
+      <Modal isOpen={!!reviewModalOpen} onClose={() => setReviewModalOpen(false)} title={`Review Report ${report.id}`} size="xl" footer={(
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => setReviewModalOpen(false)}>Cancel</Button>
+          <Button onClick={saveReview}>Save Review</Button>
+        </div>
+      )}>
+        <div className="space-y-4">
+          <div>
+            <div className="flex gap-2 mb-2">
+              <button type="button" className="px-2 py-1 border rounded" onClick={() => document.execCommand('bold')}>B</button>
+              {report?.status !== 'Completed' && (
+                <Button onClick={() => setReviewModalOpen(true)}>Add / Edit Review</Button>
+              )}
+              <Button className="text-red-600" onClick={async () => {
+                if (!confirm('Delete this report? This will remove associated uploaded files.')) return;
+                try {
+                  const res = await fetch(`http://localhost:3000/api/reports/${report.id}`, { method: 'DELETE', credentials: 'include' });
+                  if (res.ok) {
+                    alert('Report deleted');
+                    navigate('/reports');
+                  } else {
+                    alert('Failed to delete report');
+                  }
+                } catch (e) { console.error(e); alert('Failed to delete report'); }
+              }}>Delete</Button>
+              <label className="px-2 py-1 border rounded cursor-pointer">
+                Image
+                <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                  const f = e.target.files?.[0]; if (!f) return; const url = await uploadMedia(f); if (url) insertHtmlAtCaret(`<img src="${url}" alt="${f.name}" style="max-width:100%"/>`);
+                }} />
+              </label>
+              <label className="px-2 py-1 border rounded cursor-pointer">
+                Video
+                <input type="file" accept="video/*" className="hidden" onChange={async (e) => {
+                  const f = e.target.files?.[0]; if (!f) return; const url = await uploadMedia(f); if (url) insertHtmlAtCaret(`<video controls src="${url}" style="max-width:100%"></video>`);
+                }} />
+              </label>
+            </div>
+            <div>
+              <div id="review-editor" contentEditable dir="ltr" style={{ minHeight: 160, border: '1px solid #e5e7eb', padding: 10, borderRadius: 6 }} onInput={(e: any) => setReviewContent(e.currentTarget.innerHTML)} dangerouslySetInnerHTML={{ __html: reviewContent }} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Overall Score</label>
+            <input type="number" className="w-full border rounded p-2" value={reviewScore ?? ''} onChange={e => setReviewScore(e.target.value ? Number(e.target.value) : null)} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Status</label>
+            <select className="w-full border rounded p-2" value={reviewStatus || ''} onChange={e => setReviewStatus(e.target.value)}>
+              <option value="">(Select)</option>
+              <option value="Completed">Completed</option>
+              <option value="Draft">Draft</option>
+              <option value="Reviewed">Reviewed</option>
+            </select>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

@@ -4,7 +4,7 @@ import { BellIcon, UserCircleIcon, ArrowRightOnRectangleIcon, Bars3Icon } from '
 import { useMockData } from '../../hooks/useMockData';
 import { useTheme } from '../../hooks/useTheme';
 
-const Header: React.FC<{ collapsed?: boolean; onToggleSidebar?: () => void }> = ({ collapsed, onToggleSidebar }) => {
+const Header: React.FC<{ collapsed?: boolean; onToggleSidebar?: () => void; onToggleMobileSidebar?: () => void }> = ({ collapsed, onToggleSidebar, onToggleMobileSidebar }) => {
   const { currentUser, logout } = useMockData();
   const navigate = useNavigate();
   const { settings } = useTheme();
@@ -39,7 +39,7 @@ const Header: React.FC<{ collapsed?: boolean; onToggleSidebar?: () => void }> = 
             )}
           </div>
           <div className="flex items-center space-x-4">
-            <button onClick={onToggleSidebar} className="p-2 rounded-md text-gray-600 hover:bg-gray-100 md:hidden">
+            <button onClick={() => (onToggleMobileSidebar ? onToggleMobileSidebar() : onToggleSidebar && onToggleSidebar())} className="p-2 rounded-md text-gray-600 hover:bg-gray-100 md:hidden">
               <Bars3Icon className="h-6 w-6" />
             </button>
             <button onClick={onToggleSidebar} className="p-2 rounded-md text-gray-600 hover:bg-gray-100 hidden md:inline-flex" title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
