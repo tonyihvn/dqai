@@ -1,0 +1,13 @@
+name: intelliform-chroma
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - chromadb
+    - fastapi
+    - "uvicorn[standard]"
+    - python-dotenv
+    - pydantic
+    - python-multipart

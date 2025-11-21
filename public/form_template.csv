@@ -1,0 +1,8 @@
+Question,Type,Helper Text,Required,ColumnSize,field_name,calculation,Page,Section,ShowIf
+What is your name?,textbox,,true,12,,,,Personal Info,Identity,
+What is your age?,number,,true,6,age,,,Personal Info,Identity,
+Gender,dropdown,,true,6,,,,Personal Info,Identity,
+Date of Birth,date,,false,6,,,,Personal Info,Identity,
+Score,number,,false,6,score,,,Results,Scoring,
+Total Score,computed,,false,6,total_score,age+score*2,Results,Scoring,
+Comments,textarea,,false,12,,,,Notes,General,

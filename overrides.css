@@ -1,0 +1,83 @@
+.app-sidebar,
+.app-sidebar-inner {
+    background-color: var(--sidebar-bg, #ffffff) !important;
+    color: var(--nav-text-color, #111827) !important;
+    /* neutral text */
+    font-family: var(--app-font-family, Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial) !important;
+}
+
+/* Ensure any Materialize 'pink' or 'red' classes inside sidebar do not apply */
+.app-sidebar .pink,
+.app-sidebar .pink.lighten-1,
+.app-sidebar .pink.lighten-2,
+.app-sidebar .red,
+.app-sidebar .red.lighten-1,
+.app-sidebar .red.lighten-2 {
+    background-color: transparent !important;
+    color: inherit !important;
+}
+
+/* Override active link backgrounds that might be set by other libraries */
+.app-sidebar a,
+.app-sidebar .group {
+    background-color: transparent !important;
+    color: inherit !important;
+}
+
+/* Specific override for Tailwind utility classes that may set bg-primary-50/text-primary-600
+   Convert active background to white and active text to primary-dark (or black) */
+.app-sidebar .bg-primary-50 {
+    background-color: var(--sidebar-bg, #ffffff) !important;
+}
+
+.app-sidebar .text-primary-600 {
+    color: var(--nav-text-color, #111827) !important;
+}
+
+/* Remove any box-shadow or tint added by Materialize components */
+.app-sidebar * {
+    box-shadow: none !important;
+    filter: none !important;
+    background-image: none !important;
+}
+
+:root {
+    --primary-color: #3b82f6;
+    --sidebar-bg: #ffffff;
+    --nav-text-color: #111827;
+    --logo-color: #111827;
+    --app-text-color: #111827;
+    --app-font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+}
+
+/* Example usage: buttons and links can use --primary-color */
+.btn-primary,
+.text-primary {
+    background-color: var(--primary-color) !important;
+    color: white !important;
+}
+
+/* Force navbar/header/nav wrapper backgrounds to use the configured navbar background */
+header,
+nav,
+.nav-wrapper,
+.navbar,
+.app-topnav {
+    background-color: var(--navbar-bg, var(--primary-color)) !important;
+    color: var(--nav-text-color, #ffffff) !important;
+}
+
+/* Ensure brand/logo area respects uploaded logo or text */
+.brand-logo,
+.app-logo {
+    color: var(--logo-color) !important;
+}
+
+/* If Materialize adds a .pink or .red class to a nav, override it inside header/nav */
+header .pink,
+header .red,
+nav .pink,
+nav .red {
+    background-color: var(--navbar-bg, #ffffff) !important;
+    color: var(--nav-text-color, #111827) !important;
+}

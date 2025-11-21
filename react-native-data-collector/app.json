@@ -1,0 +1,13 @@
+{
+    "expo": {
+        "name": "Data Collector",
+        "slug": "react-native-data-collector",
+        "version": "1.0.0",
+        "sdkVersion": "48.0.0",
+        "platforms": [
+            "ios",
+            "android",
+            "web"
+        ]
+    }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "DQAPlus - Data Collection Platform",
+  "description": "A comprehensive platform for creating, deploying, and managing data collection forms. Features a drag-and-drop form builder, role-based access control, data quality improvement workflows, and activity dashboards.",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,7 @@
+Question,Type,Helper Text,Options,Required,ColumnSize,Field Name,Computed Formula
+What is your name?,textbox,,,true,12,,
+What is your age?,number,,,true,6,,
+Gender,dropdown,,1:Male,2:Female,3:Other,true,6,,
+Date of Birth,date,,,false,6,,
+Comments,textarea,,,false,12,,
+BMI,computed,,,(weight/(height*height)),false,6,bmi,weight/(height*height)

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@19.2.0",
+        "react/": "https://esm.sh/react@19.2.0/",
+        "react-dom": "https://esm.sh/react-dom@19.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@19.2.0/client",
+        "react-router-dom": "https://esm.sh/react-router-dom@6.22.3?external=react,react-dom",
+        "@heroicons/react/24/outline": "https://esm.sh/@heroicons/react@2.1.1/24/outline",
+        "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs"
+      }
+    }
+    </script>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DQAPlus - Data Collection Platform</title>
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Materialize removed to avoid styling conflicts -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: { "50": "#eff6ff", "100": "#dbeafe", "200": "#bfdbfe", "300": "#93c5fd", "400": "#60a5fa", "500": "#3b82f6", "600": "#2563eb", "700": "#1d4ed8", "800": "#1e40af", "900": "#1e3a8a", "950": "#172554" }
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="/index.css">
+</head>
+
+<body class="bg-gray-100">
+  <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+
+</html>
