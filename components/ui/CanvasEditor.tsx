@@ -10,12 +10,15 @@ type Props = {
   margins?: { top?: number; right?: number; bottom?: number; left?: number };
   onSelect?: (block: any | null) => void;
   showToolbox?: boolean;
+  showInspector?: boolean;
 };
 // Canvas-style editor with a small toolbox and inspector. Supports positioned draggable blocks.
-const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChange, className, paperSize = 'A4', orientation = 'portrait', margins = {}, onSelect, showToolbox = true }: Props, ref) {
+const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChange, className, paperSize = 'A4', orientation = 'portrait', margins = {}, onSelect, showToolbox = true, showInspector = true }: Props, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [internalHtml, setInternalHtml] = useState<string>(value || '');
   const [blocks, setBlocks] = useState<Array<any>>([]);
+  const [history, setHistory] = useState<Array<{ html: string; blocks: any[] }>>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const blocksRef = useRef<Array<any>>(blocks);
   const [isTextModalOpen, setIsTextModalOpen] = useState(false);
   const [textModalHtml, setTextModalHtml] = useState('');
@@ -40,6 +43,18 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChang
     }
     setInternalHtml(containerHtml || '');
     onChange && onChange(combined || '');
+    // push snapshot to history (blocks + html)
+    try {
+      const snap = { html: containerHtml || '', blocks: JSON.parse(JSON.stringify(blocks || [])) };
+      setHistory(h => {
+        const next = h.slice(0, historyIndex + 1);
+        next.push(snap);
+        // limit history to 50
+        if (next.length > 50) next.shift();
+        return next;
+      });
+      setHistoryIndex(i => Math.min(historyIndex + 1, 49));
+    } catch (e) { /* ignore history errors */ }
   };
 
   const insertHtmlAtCursor = (html: string) => {
@@ -72,12 +87,50 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChang
   // expose imperative API so parent can call toolbox actions when toolbox is moved
   useImperativeHandle(ref, () => ({
     insertTextBlock: () => { setInsertAsBlock(false); setTextModalHtml('<p><em>Double-click to edit</em></p>'); setIsTextModalOpen(true); },
-    insertBlock: () => { setInsertAsBlock(true); setTextModalHtml('<p><em>Block: Double-click to edit</em></p>'); setIsTextModalOpen(true); },
-    insertPlaceholder: async () => { const id = window.prompt('Question ID to reference (e.g. 123)'); if (!id) return; const lbl = window.prompt('Placeholder label', `Question ${id}`) || `Question ${id}`; const safeLabel = String(lbl).replace(/</g, '&lt;'); insertHtmlAtCursor(`<span class="tpl-placeholder" contenteditable="false" data-qid="${id}" data-label="${safeLabel}" style="background:#eef2ff;border:1px dashed #c7d2fe;padding:2px 6px;border-radius:3px;margin:0 4px;display:inline-block">${safeLabel}</span>`); },
-    insertImageUrl: async () => { const url = window.prompt('Image URL'); if (!url) return; insertHtmlAtCursor(`<img src="${url}" style="max-width:100%"/>`); },
+    insertBlock: (opts?: { html?: string; left?: number; top?: number }) => {
+      if (opts && opts.html) {
+        insertBlockAt(opts.html, opts.left || 40, opts.top || 40);
+        return;
+      }
+      setInsertAsBlock(true); setTextModalHtml('<p><em>Block: Double-click to edit</em></p>'); setIsTextModalOpen(true);
+    },
+    insertPlaceholder: async () => { const id = window.prompt('Question ID to reference (e.g. 123)'); if (!id) return; const lbl = window.prompt('Placeholder label', `Question ${id}`) || `Question ${id}`; const safeLabel = String(lbl).replace(/</g, '&lt;'); insertHtmlAtCursor(`<span class="tpl-placeholder" contenteditable="false" data-qid="${id}" data-label="${safeLabel}" style="background:#eef2ff;border:1px dashed #c7d2fe;padding:2px 6px;border-radius:3px;margin:0 4px;display:inline-block;cursor:move;">${safeLabel}</span>`); },
+    insertImageUrl: async () => { const url = window.prompt('Image URL'); if (!url) return; insertHtmlAtCursor(`<img src="${url}" style="max-width:100%;cursor:move;"/>`); },
+    insertHtml: (html: string) => { if (!html) return; insertHtmlAtCursor(html); },
     zoomIn: () => setZoom(z => Math.min(2, +(z + 0.1).toFixed(2))),
-    zoomOut: () => setZoom(z => Math.max(0.25, +(z - 0.1).toFixed(2)))
+    zoomOut: () => setZoom(z => Math.max(0.25, +(z - 0.1).toFixed(2))),
+    undo: () => undo(),
+    redo: () => redo()
   } as any), [insertHtmlAtCursor]);
+
+  // undo/redo
+  const undo = () => {
+    if (historyIndex <= 0) return;
+    const ni = historyIndex - 1;
+    const snap = history[ni];
+    if (!snap) return;
+    setBlocks(snap.blocks || []);
+    setInternalHtml(snap.html || '');
+    setHistoryIndex(ni);
+    // emit change to parent
+    setTimeout(() => {
+      const combined = (snap.html || '') + (snap.blocks || []).map((b: any) => `<div class="tpl-block" data-block-id="${b.id}" data-block-json='${JSON.stringify(b.meta || {})}' style="position:absolute; left:${b.left}px; top:${b.top}px">${b.html}</div>`).join('');
+      onChange && onChange(combined);
+    }, 20);
+  };
+  const redo = () => {
+    if (historyIndex >= history.length - 1) return;
+    const ni = historyIndex + 1;
+    const snap = history[ni];
+    if (!snap) return;
+    setBlocks(snap.blocks || []);
+    setInternalHtml(snap.html || '');
+    setHistoryIndex(ni);
+    setTimeout(() => {
+      const combined = (snap.html || '') + (snap.blocks || []).map((b: any) => `<div class="tpl-block" data-block-id="${b.id}" data-block-json='${JSON.stringify(b.meta || {})}' style="position:absolute; left:${b.left}px; top:${b.top}px">${b.html}</div>`).join('');
+      onChange && onChange(combined);
+    }, 20);
+  };
 
   useEffect(() => { if (value !== internalHtml) setInternalHtml(value || ''); }, [value]);
 
@@ -206,7 +259,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChang
   };
 
   const insertBlockAt = (htmlContent: string, left = 40, top = 40) => {
-    const id = `b_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+    const id = `b_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const b = { id, html: htmlContent, left, top, width: null, height: null, meta: {} };
     setBlocks(prev => { const next = [...prev, b]; return next; });
     setTimeout(() => emitChange(), 50);
@@ -271,28 +324,59 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChang
       const top = Math.max(0, Math.round((clientY - rootRect.top) / zoom));
       // capture outerHTML and remove from editable content
       const html = el.outerHTML;
+      // remove element from DOM and update internalHtml to avoid duplication when emitting combined HTML
       el.remove();
-      const id = `b_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+      // sync internalHtml with current DOM
+      try { setInternalHtml(containerRef.current ? containerRef.current.innerHTML : ''); } catch (e) { /* ignore */ }
+      const id = `b_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const newBlock = { id, html, left, top, width: null, height: null, meta: {} };
       setBlocks(prev => {
         const next = [...prev, newBlock];
         // start dragging slightly after state update so block exists in DOM
-        setTimeout(() => beginDrag(id, clientX, clientY), 20);
+        setTimeout(() => {
+          // ensure the change is emitted so the parent doesn't re-insert the removed element
+          try { emitChange(); } catch (e) { /* ignore */ }
+          beginDrag(id, clientX, clientY);
+        }, 20);
         return next;
       });
     } catch (e) { console.error('Failed to convert element to block', e); }
   };
 
-  // handle drops from outside (e.g., dragging a question or table header)
+  // handle drops from outside (e.g., dragging a question or table header) and files (images)
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    // If files are dropped (images), insert as positioned blocks at drop location
+    try {
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length > 0) {
+        const paperRoot = containerRef.current ? (containerRef.current.closest('.paper-root') as HTMLElement | null) : null;
+        const rootRect = paperRoot ? paperRoot.getBoundingClientRect() : { left: 0, top: 0 };
+        const clientX = (e.nativeEvent as any).clientX || 0;
+        const clientY = (e.nativeEvent as any).clientY || 0;
+        const left = Math.max(0, Math.round((clientX - rootRect.left) / zoom));
+        const top = Math.max(0, Math.round((clientY - rootRect.top) / zoom));
+        for (const f of files) {
+          if (!f.type.startsWith('image/')) continue;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const dataUrl = ev.target?.result as string;
+            const html = `<img src="${dataUrl}" style="max-width:100%" />`;
+            insertBlockAt(html, left, top);
+          };
+          reader.readAsDataURL(f);
+        }
+        return;
+      }
+    } catch (e) { /* ignore */ }
+
     // prefer HTML payload
     const html = e.dataTransfer.getData('text/html') || e.dataTransfer.getData('text/plain') || '';
     if (html) {
       insertHtmlAtCursor(html);
       return;
     }
-    // fallback: files or other types could be handled here
+    // fallback: other types could be handled here
   };
 
   // render computed styles for paper size/orientation/margins
@@ -309,7 +393,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChang
   const padLeft = (margins.left || 20);
 
   return (
-    <div className={`flex gap-3 ${className || ''}`}>
+    <div className={`flex gap-3 items-start ${className || ''}`}>
       {showToolbox && (
         <div className="w-28">
           <div className="space-y-2">
@@ -333,7 +417,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChang
           </div>
         </div>
       )}
-      <div style={{ width: Math.round(widthPx * zoom) }} className="border shadow-sm bg-white relative" >
+      <div style={{ minWidth: Math.round(widthPx * zoom), display: 'flex', justifyContent: 'center' }} className="border shadow-sm bg-white relative flex-1 overflow-auto" >
         {/* rulers (simple) */}
         <div className="absolute left-0 top-0 right-0 h-6 bg-gray-100 border-b z-20 flex items-center" style={{ transform: `scale(${zoom})`, transformOrigin: 'left top' }}>
           <div className="ml-2 text-xs text-gray-600">{paperSize} — {Math.round(physW)}mm</div>
@@ -371,10 +455,43 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', onChang
           </div>
         </div>
       </div>
-      <div className="w-48">
-        <div className="text-xs font-medium">Inspector</div>
-        <div className="mt-2 text-xs text-gray-500">(Selection appears in the Preview Panel)</div>
-      </div>
+      {showInspector && (
+        <div className="w-48">
+          <div className="text-xs font-medium">Inspector</div>
+          <div className="mt-2 text-xs text-gray-500">Selection</div>
+          <div className="mt-2 text-xs">
+            {selectedBlockId ? (() => {
+              const b = blocks.find(x => x.id === selectedBlockId);
+              if (!b) return <div className="text-xs text-gray-500">No selection</div>;
+              return (
+                <div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Left (px)</label>
+                    <input className="w-full border p-1 text-sm" value={String(b.left)} onChange={e => setBlocks(prev => prev.map(x => x.id === b.id ? { ...x, left: Number(e.target.value || 0) } : x))} />
+                  </div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Top (px)</label>
+                    <input className="w-full border p-1 text-sm" value={String(b.top)} onChange={e => setBlocks(prev => prev.map(x => x.id === b.id ? { ...x, top: Number(e.target.value || 0) } : x))} />
+                  </div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Inner HTML</label>
+                    <textarea className="w-full border p-1 text-sm" rows={4} value={b.html} onChange={e => setBlocks(prev => prev.map(x => x.id === b.id ? { ...x, html: e.target.value } : x))} />
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button className="p-1 border rounded text-xs" onClick={() => {
+                      // remove block
+                      setBlocks(prev => prev.filter(x => x.id !== b.id));
+                      setSelectedBlockId(null);
+                      setTimeout(() => emitChange(), 40);
+                    }}>Remove</button>
+                    <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => { setTimeout(() => emitChange(), 40); }}>Save</button>
+                  </div>
+                </div>
+              );
+            })() : <div className="text-xs text-gray-500">Click an object to view/edit properties</div>}
+          </div>
+        </div>
+      )}
 
       {/* Text editing modal (TinyMCE/Wysiwyg) */}
       {isTextModalOpen && (

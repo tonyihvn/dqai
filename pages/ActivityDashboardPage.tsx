@@ -110,7 +110,7 @@ const ActivityDashboardPage: React.FC = () => {
   const standaloneUrl = `${window.location.origin}/standalone-form/${activity.id}`;
   return (
     <div className="space-y-6 pb-20">
-      <div className="flex justify-between items-center">
+      <div>
         <div>
           <h1 className="text-2xl font-bold">{activity.title} — Collected Data</h1>
           <p className="text-sm text-gray-500">{stripHtml(activity.details)}</p>
@@ -119,19 +119,22 @@ const ActivityDashboardPage: React.FC = () => {
             <a href={standaloneUrl} target="_blank" rel="noopener noreferrer" className="text-primary-600 underline break-all">{standaloneUrl}</a>
           </div>
         </div>
-        <div className="space-x-2">
-          <Button onClick={() => navigate('/activities')} variant="secondary">Back</Button>
-          <Button onClick={() => navigate(`/activities/fill/${activity.id}`)} variant="primary">New +</Button>
-          <Button onClick={() => navigate(`/reports/builder?activityId=${activity.id}`)} variant="secondary">Build Report</Button>
-          <Button onClick={handleDownloadPdf}>Download PDF</Button>
+
+        <div className="flex justify-end mt-3">
+          <div className="inline-flex items-center space-x-2">
+            <Button onClick={() => navigate('/activities')} variant="secondary">Back</Button>
+            <Button onClick={() => navigate(`/activities/fill/${activity.id}`)} variant="primary">New +</Button>
+            <Button onClick={() => navigate(`/reports/builder?activityId=${activity.id}`)} variant="secondary">Build Report</Button>
+            <Button onClick={handleDownloadPdf}>Download PDF</Button>
+          </div>
         </div>
       </div>
 
       <Card>
         <h2 className="text-lg font-semibold mb-2">Power BI</h2>
         <p className="text-sm text-gray-500">Embed your Power BI report here (iframe) or connect external dashboard.</p>
-          <div className="mt-4">
-            <div className="flex items-center justify-end mb-2">
+        <div className="mt-4">
+          <div className="flex items-center justify-end mb-2">
             <Button variant="secondary" size="sm" onClick={() => { setPowerbiInput(activity.powerbi_url || ''); setPowerbiLinkType(activity.powerbi_link_type || null); setPowerbiMode(activity.powerbi_mode || null); setPowerbiModalOpen(true); }}>Configure Power BI</Button>
           </div>
           {(() => {
@@ -201,7 +204,7 @@ const ActivityDashboardPage: React.FC = () => {
                 try {
                   setPowerbiSaving(true);
                   const res = await fetch(`/api/admin/activities/${activity.id}/powerbi`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ powerbi_link: url, powerbi_url: url, link_type: powerbiLinkType || null, mode: powerbiMode || null }) });
-                    if (!res.ok) { const txt = await res.text().catch(() => ''); swalError('Save failed', txt || 'Unable to save Power BI configuration'); setPowerbiSaving(false); return; }
+                  if (!res.ok) { const txt = await res.text().catch(() => ''); swalError('Save failed', txt || 'Unable to save Power BI configuration'); setPowerbiSaving(false); return; }
                   // refresh dashboard
                   const r = await fetch(`/api/activity_dashboard/${activityId}`, { credentials: 'include' });
                   if (r.ok) setData(await r.json());
@@ -313,7 +316,8 @@ const ActivityDashboardPage: React.FC = () => {
             { key: 'user_id', label: 'User' },
             { key: 'status', label: 'Status' },
             { key: 'reviewers_report', label: "Reviewer's Report" },
-            { key: 'actions', label: 'Actions', render: (row: any) => (
+            {
+              key: 'actions', label: 'Actions', render: (row: any) => (
                 <div className="flex gap-2">
                   <Button size="sm" variant="secondary" onClick={() => navigate(`/reports/${row.__raw.id}`)}>View</Button>
                   <Button size="sm" variant="secondary" onClick={() => navigate(`/reports/builder?reportId=${row.__raw.id}`)}>Edit</Button>
@@ -332,7 +336,8 @@ const ActivityDashboardPage: React.FC = () => {
                     } catch (e) { console.error(e); swalError('Delete failed', 'Unable to delete report'); }
                   }}>Delete</Button>
                 </div>
-              ) },
+              )
+            },
           ];
           const data = reports.map((r: any) => ({
             id: r.id,
@@ -380,21 +385,21 @@ const ActivityDashboardPage: React.FC = () => {
                   setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(url); }, 100);
                 }}>Download</Button>
                 <Button size="sm" variant="secondary" onClick={async () => {
-                    const ok = await confirm({ title: 'Delete uploaded file?', text: 'This will permanently remove the uploaded file.' });
+                  const ok = await confirm({ title: 'Delete uploaded file?', text: 'This will permanently remove the uploaded file.' });
                   if (!ok) return;
                   try {
-                      const res = await fetch(`/api/uploaded_docs/${d.id}`, { method: 'DELETE', credentials: 'include' });
-                      if (res.ok) {
-                        // refresh dashboard data
-                        const r = await fetch(`/api/activity_dashboard/${activityId}`, { credentials: 'include' });
-                        if (r.ok) {
-                          setData(await r.json());
-                          swalSuccess('Deleted', 'Uploaded file deleted');
-                        }
-                      } else {
-                        const txt = await res.text().catch(() => '');
-                        swalError('Delete failed', txt || 'Unable to delete the uploaded file');
+                    const res = await fetch(`/api/uploaded_docs/${d.id}`, { method: 'DELETE', credentials: 'include' });
+                    if (res.ok) {
+                      // refresh dashboard data
+                      const r = await fetch(`/api/activity_dashboard/${activityId}`, { credentials: 'include' });
+                      if (r.ok) {
+                        setData(await r.json());
+                        swalSuccess('Deleted', 'Uploaded file deleted');
                       }
+                    } else {
+                      const txt = await res.text().catch(() => '');
+                      swalError('Delete failed', txt || 'Unable to delete the uploaded file');
+                    }
                   } catch (e) { console.error(e); swalError('Delete failed', 'Unable to delete the uploaded file'); }
                 }}>Delete</Button>
               </div>

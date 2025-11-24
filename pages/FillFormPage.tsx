@@ -317,18 +317,62 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
                 };
                 // copy answers but strip out any dataUrl content so we can upload them separately
                 const strippedAnswers: Record<string, any> = {};
+                // sanitize computed fields so we don't save function source code into DB
+                const sanitizeComputedValue = (v: any) => {
+                    if (v === undefined || v === null) return v;
+                    if (typeof v === 'number' || typeof v === 'boolean') return v;
+                    if (typeof v === 'function') {
+                        try {
+                            const res = v();
+                            return res === undefined || res === null ? null : res;
+                        } catch (e) { return null; }
+                    }
+                    if (typeof v === 'string' && /=>|function\s*\(/.test(v)) {
+                        // extract trailing primitive after last closing brace
+                        const after = v.replace(/^[\s\S]*}\s*/, '').trim();
+                        if (after) {
+                            if (/^-?\d+(?:\.\d+)?$/.test(after)) return Number(after);
+                            try { return JSON.parse(after); } catch (e) { return after; }
+                        }
+                        return null;
+                    }
+                    return v;
+                };
                 const fileAnswerMap: Array<{ qid: string; filename: string; mimeType?: string; dataUrl: string }> = [];
                 for (const [qid, val] of Object.entries(answers)) {
-                    if (val && typeof val === 'object' && (val.dataUrl || val.data)) {
+                    // narrow to any so we can safely access file-like properties
+                    const vObj = val as any;
+                    // if this question is computed, sanitize value
+                    // find question metadata from formDef
+                    try {
+                        if (formDef) {
+                            for (const p of formDef.pages) for (const s of p.sections) for (const q of s.questions) {
+                                if (String(q.id) === String(qid) && q.answerType === AnswerType.COMPUTED) {
+                                    // replace val with sanitized primitive
+                                    // eslint-disable-next-line no-param-reassign
+                                    // @ts-ignore
+                                    // keep vObj as sanitized
+                                    const sv = sanitizeComputedValue(vObj);
+                                    // use sv as vObj for subsequent handling
+                                    // but preserve object identity if file
+                                    // assign back to variable used below
+                                    // eslint-disable-next-line prefer-const
+                                    // (we'll overwrite vObj variable)
+                                }
+                            }
+                        }
+                    } catch (e) { /* ignore */ }
+                    if (vObj && typeof vObj === 'object' && (vObj.dataUrl || vObj.data)) {
                         // collect for upload after report is created
-                        const filename = val.filename || `file_${Date.now()}`;
-                        const mimeType = val.mimeType || val.type || '';
-                        const dataUrl = val.dataUrl || val.data || '';
+                        const filename = vObj.filename || vObj.name || `file_${Date.now()}`;
+                        const mimeType = vObj.mimeType || vObj.type || '';
+                        const dataUrl = vObj.dataUrl || vObj.data || '';
                         fileAnswerMap.push({ qid, filename, mimeType, dataUrl });
                         // leave a placeholder in answers
                         strippedAnswers[qid] = { filename };
                     } else {
-                        strippedAnswers[qid] = val;
+                        // sanitize computed string values too
+                        strippedAnswers[qid] = sanitizeComputedValue(val);
                     }
                 }
                 payloadBase.answers = strippedAnswers;

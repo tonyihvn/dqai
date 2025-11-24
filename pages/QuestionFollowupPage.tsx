@@ -85,7 +85,7 @@ const QuestionFollowupPage: React.FC = () => {
                 <div key={a.id} className="flex items-start space-x-4">
                   <div className="w-1/3 text-sm text-gray-700">{typeof a.answer_value === 'object' ? JSON.stringify(a.answer_value) : String(a.answer_value)}</div>
                   <div className="w-1/3">
-                    <label className="block text-xs font-medium mb-1">Follow-up</label>
+                    <label className="block text-xs font-medium mb-1">Enter Follow-up Activity</label>
                     <textarea value={editingMap[a.id]?.quality_improvement_followup || ''} onChange={e => setEditingMap(prev => ({ ...prev, [a.id]: { ...(prev[a.id] || {}), quality_improvement_followup: e.target.value } }))} className="w-full border rounded p-2" rows={2} />
                   </div>
                   <div className="w-1/4">

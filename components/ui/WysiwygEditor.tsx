@@ -10,7 +10,7 @@ type Props = {
 // If TinyMCE isn't installed, it falls back to the in-repo CanvasEditor.
 const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
   const [EditorComp, setEditorComp] = useState<any>(null);
-  const [tinyKey, setTinyKey] = useState<string>('');
+  const [tinyKey, setTinyKey] = useState<string | null>(null);
   const editorRef = useRef<any>(null);
 
   useEffect(() => {
@@ -51,7 +51,9 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
         // Fallback to import.meta.env (Vite). Support both bare TINYMCE_API_KEY and VITE_TINYMCE_API_KEY
         const im = (typeof import.meta !== 'undefined' && (import.meta as any).env) ? (import.meta as any).env : {};
         const envKey = im && (im.TINYMCE_API_KEY || im.VITE_TINYMCE_API_KEY) ? (im.TINYMCE_API_KEY || im.VITE_TINYMCE_API_KEY) : '';
-        if (mounted) setTinyKey(envKey || '');
+        // Do not use a hard-coded demo key (can cause validation errors). If no key is provided
+        // we'll leave tinyKey as null so the caller can fall back to an in-repo editor instead.
+        if (mounted) setTinyKey(envKey || null);
       } catch (e) {
         if (mounted) setTinyKey('');
       }
@@ -59,17 +61,12 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
     return () => { mounted = false; };
   }, []);
 
-  // If TinyMCE loaded, render it. Otherwise render CanvasEditor.
-  if (!EditorComp) {
+  // If TinyMCE isn't available or we didn't resolve a client API key, fall back to the in-repo CanvasEditor to avoid runtime validation errors.
+  if (!EditorComp || tinyKey === null) {
     return <CanvasEditor value={value} onChange={onChange} />;
   }
 
   // EditorComp is TinyMCE's Editor component
-  if (!EditorComp) {
-    return <CanvasEditor value={value} onChange={onChange} />;
-  }
-
-  // Only render Editor after we've resolved an API key (can be empty string which is valid for self-hosted TinyMCE builds)
   return (
     <EditorComp
       apiKey={tinyKey || ''}

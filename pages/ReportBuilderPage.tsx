@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
-import CanvasEditor from '../components/ui/CanvasEditor';
+import RichTextEditor from '../components/ui/RichTextEditor';
 import WysiwygEditor from '../components/ui/WysiwygEditor';
+import CanvasEditor from '../components/ui/CanvasEditor';
+// import WysiwygEditor from '../components/ui/WysiwygEditor';
 import { apiFetch, getApiBase } from '../utils/api';
 
 const ReportBuilderPage: React.FC = () => {
@@ -24,22 +26,117 @@ const ReportBuilderPage: React.FC = () => {
   const [uploadedDocs, setUploadedDocs] = useState<any[]>([]);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState<boolean>(true);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const [panelPos, setPanelPos] = useState<{ x: number; y: number; }>(({ x: (typeof window !== 'undefined' ? Math.max(40, (window.innerWidth || 1200) - 380) : 800), y: 120 }));
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number; }>(() => {
+    try {
+      const raw = localStorage.getItem('reportBuilderPanelPos');
+      if (raw) return JSON.parse(raw);
+    } catch (e) { /* ignore */ }
+    return { x: (typeof window !== 'undefined' ? Math.max(40, (window.innerWidth || 1200) - 380) : 800), y: 120 };
+  });
+  const [panelSize, setPanelSize] = useState<{ width: number; height: number }>(() => {
+    try { const raw = localStorage.getItem('reportBuilderPanelSize'); if (raw) return JSON.parse(raw); } catch (e) { }
+    return { width: 340, height: 420 };
+  });
+  const resizeRef = useRef<{ resizing: boolean; dir?: string; startX: number; startY: number; origW: number; origH: number; origLeft: number; origTop: number }>({ resizing: false, startX: 0, startY: 0, origW: panelSize.width, origH: panelSize.height, origLeft: panelPos.x, origTop: panelPos.y });
   const dragRef = useRef<{ dragging: boolean; startX: number; startY: number; origX: number; origY: number; }>({ dragging: false, startX: 0, startY: 0, origX: 0, origY: 0 });
+  const [confirmState, setConfirmState] = useState<{ open: boolean; message: string; onConfirm?: () => void }>({ open: false, message: '' });
+  const [toasts, setToasts] = useState<Array<{ id: number; text: string }>>([]);
+  const [panelShown, setPanelShown] = useState<boolean>(false); // only show floating panel after New/Edit clicked
+  const [richTextMode, setRichTextMode] = useState<'wysiwyg' | 'builtin' | 'none'>(() => { try { const r = localStorage.getItem('reportBuilderRichTextMode'); return (r as any) || 'wysiwyg'; } catch (e) { return 'wysiwyg'; } });
+  const [disableRichText, setDisableRichText] = useState<boolean>(() => { try { return localStorage.getItem('reportBuilderDisableRichText') === '1'; } catch (e) { return false; } });
+
+  useEffect(() => {
+    if (!toasts || toasts.length === 0) return;
+    const timers = toasts.map(t => setTimeout(() => setToasts(curr => curr.filter(x => x.id !== t.id)), 3500));
+    return () => timers.forEach(t => clearTimeout(t));
+  }, [toasts]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!dragRef.current.dragging) return;
       const dx = e.clientX - dragRef.current.startX;
       const dy = e.clientY - dragRef.current.startY;
-      setPanelPos({ x: Math.max(10, dragRef.current.origX + dx), y: Math.max(10, dragRef.current.origY + dy) });
+      const pos = { x: Math.max(10, dragRef.current.origX + dx), y: Math.max(10, dragRef.current.origY + dy) };
+      setPanelPos(pos);
+      try { localStorage.setItem('reportBuilderPanelPos', JSON.stringify(pos)); } catch (err) { }
     };
     const onUp = () => { dragRef.current.dragging = false; };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
   }, []);
+
+  // Resize handling: listen to document mouse moves when resizing
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizeRef.current.resizing) return;
+      const dx = e.clientX - resizeRef.current.startX;
+      const dy = e.clientY - resizeRef.current.startY;
+      let newW = resizeRef.current.origW;
+      let newH = resizeRef.current.origH;
+      let newLeft = panelPos.x;
+      let newTop = panelPos.y;
+      const dir = resizeRef.current.dir || 'se';
+      if (dir === 'se') {
+        newW = Math.max(220, Math.round(resizeRef.current.origW + dx));
+        newH = Math.max(160, Math.round(resizeRef.current.origH + dy));
+      } else if (dir === 'w') {
+        newW = Math.max(220, Math.round(resizeRef.current.origW - dx));
+        newLeft = Math.round(resizeRef.current.origLeft + dx);
+      } else if (dir === 'n') {
+        newH = Math.max(160, Math.round(resizeRef.current.origH - dy));
+        newTop = Math.round(resizeRef.current.origTop + dy);
+      } else if (dir === 'nw') {
+        newW = Math.max(220, Math.round(resizeRef.current.origW - dx));
+        newLeft = Math.round(resizeRef.current.origLeft + dx);
+        newH = Math.max(160, Math.round(resizeRef.current.origH - dy));
+        newTop = Math.round(resizeRef.current.origTop + dy);
+      }
+      const ns = { width: newW, height: newH };
+      setPanelSize(ns);
+      const np = { x: newLeft, y: newTop };
+      setPanelPos(np);
+      try { localStorage.setItem('reportBuilderPanelSize', JSON.stringify(ns)); localStorage.setItem('reportBuilderPanelPos', JSON.stringify(np)); } catch (err) { }
+    };
+    const onUp = () => { resizeRef.current.resizing = false; resizeRef.current.dir = undefined; };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+  }, [panelPos.x, panelPos.y]);
+
+  // When the selected activity on the editing template changes, load activity fields/questions/uploaded docs
+  useEffect(() => {
+    const loadForActivity = async (activityId: any) => {
+      try {
+        if (!activityId) {
+          setActivityData(null);
+          setQuestionsList([]);
+          setUploadedDocs([]);
+          return;
+        }
+        // try to locate activity from already loaded activities
+        const act = activities.find(a => String(a.id) === String(activityId) || String(a.activity_id) === String(activityId));
+        if (act) setActivityData(act);
+        try {
+          const qres = await apiFetch(`/api/questions?activityId=${activityId}`);
+          if (qres.ok) {
+            const jq = await qres.json(); setQuestionsList(Array.isArray(jq) ? jq : []);
+          } else setQuestionsList([]);
+        } catch (err) { setQuestionsList([]); }
+
+        try {
+          const dres = await apiFetch(`/api/uploaded_docs?activityId=${activityId}`);
+          if (dres.ok) {
+            const jd = await dres.json(); setUploadedDocs(Array.isArray(jd) ? jd : []);
+          } else setUploadedDocs([]);
+        } catch (err) { setUploadedDocs([]); }
+      } catch (err) { console.error('Failed to load activity data', err); }
+    };
+    loadForActivity(editing?.activity_id);
+  }, [editing?.activity_id, activities]);
 
   const loadTemplates = async () => {
     setLoading(true);
@@ -53,6 +150,7 @@ const ReportBuilderPage: React.FC = () => {
 
   const edit = (t: any) => {
     setEditing({ id: t.id, name: t.name, activity_id: t.activity_id, template_json: typeof t.template_json === 'string' ? t.template_json : JSON.stringify(t.template_json) });
+    setPanelShown(true);
   };
 
   const applyBlockUpdate = (blockId: string, updates: { left?: number; top?: number; html?: string; meta?: any }) => {
@@ -116,6 +214,11 @@ const ReportBuilderPage: React.FC = () => {
   }, [selectedBlock]);
 
   const startNew = () => setEditing({ id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '<div><h1>{{activity_title}}</h1><p>Report: {{report_id}}</p></div>' }) });
+  // ensure clicking startNew shows panel
+  const startNewShown = () => { startNew(); setPanelShown(true); };
+
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeHtml, setComposeHtml] = useState<string>('');
 
   const save = async () => {
     if (!editing || !editing.name) return alert('Please provide a name');
@@ -138,22 +241,23 @@ const ReportBuilderPage: React.FC = () => {
       if (!res.ok) { const txt = await res.text().catch(() => ''); alert('Save failed: ' + txt); return; }
       await loadTemplates();
       setEditing(null);
+      setPanelShown(false);
     } catch (e) { console.error(e); alert('Save failed'); }
   };
 
 
-    // Build headers-only table HTML for uploaded docs (structure only)
-    const buildTableHeadersHtml = (doc: any) => {
-      try {
-        const rows = Array.isArray(doc.file_content) ? doc.file_content : (Array.isArray(doc.dataset_data) ? doc.dataset_data : []);
-        if (!rows || rows.length === 0) return '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr><th>No headers</th></tr></thead></table></div>';
-        const keys = Object.keys(rows[0] || {});
-        let html = '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr>';
-        for (const k of keys) html += `<th style="border:1px solid #ddd;padding:6px;background:#f7f7f7;text-align:left">${k}</th>`;
-        html += '</tr></thead></table></div>';
-        return html;
-      } catch (e) { return '<div>Failed to render table headers</div>'; }
-    };
+  // Build headers-only table HTML for uploaded docs (structure only)
+  const buildTableHeadersHtml = (doc: any) => {
+    try {
+      const rows = Array.isArray(doc.file_content) ? doc.file_content : (Array.isArray(doc.dataset_data) ? doc.dataset_data : []);
+      if (!rows || rows.length === 0) return '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr><th>No headers</th></tr></thead></table></div>';
+      const keys = Object.keys(rows[0] || {});
+      let html = '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr>';
+      for (const k of keys) html += `<th style="border:1px solid #ddd;padding:6px;background:#f7f7f7;text-align:left">${k}</th>`;
+      html += '</tr></thead></table></div>';
+      return html;
+    } catch (e) { return '<div>Failed to render table headers</div>'; }
+  };
 
   const getTplObj = (v: any) => {
     if (!v) return {};
@@ -168,8 +272,16 @@ const ReportBuilderPage: React.FC = () => {
   const toggleQuestion = (qid: string) => setExpandedQuestions(s => ({ ...s, [qid]: !s[qid] }));
 
   const remove = async (id: number) => {
-    if (!confirm('Delete this template?')) return;
-    try { const res = await apiFetch(`/api/admin/report_templates/${id}`, { method: 'DELETE', credentials: 'include' }); if (res.ok) await loadTemplates(); } catch (e) { console.error(e); alert('Delete failed'); }
+    setConfirmState({
+      open: true, message: 'Delete this template?', onConfirm: async () => {
+        try {
+          const res = await apiFetch(`/api/admin/report_templates/${id}`, { method: 'DELETE', credentials: 'include' });
+          if (res.ok) { await loadTemplates(); setToasts(t => [...t, { id: Date.now(), text: 'Template deleted' }]); }
+          else { setToasts(t => [...t, { id: Date.now(), text: 'Delete failed' }]); }
+        } catch (e) { console.error(e); setToasts(t => [...t, { id: Date.now(), text: 'Delete failed' }]); }
+        setConfirmState({ open: false, message: '' });
+      }
+    });
   };
 
   return (
@@ -179,7 +291,7 @@ const ReportBuilderPage: React.FC = () => {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-xl font-semibold">Report Templates</h2>
             <div className="space-x-2">
-              <Button size="sm" onClick={startNew}>+ New</Button>
+              <Button size="sm" onClick={startNewShown}>+ New</Button>
               <Button size="sm" variant="secondary" onClick={loadTemplates}>Refresh</Button>
             </div>
           </div>
@@ -209,48 +321,35 @@ const ReportBuilderPage: React.FC = () => {
           <Card>
             {editing ? (
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium">Name</label>
-                  <input className="mt-1 block w-full border rounded p-2" value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium">Activity (optional)</label>
-                  <select className="mt-1 block w-full border rounded p-2" value={editing.activity_id || ''} onChange={e => setEditing({ ...editing, activity_id: e.target.value || null })}>
-                    <option value="">(Any activity)</option>
-                    {activities.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
-                  </select>
-                </div>
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="col-span-2">
-                    <label className="block text-sm font-medium">Template HTML</label>
-                    <div className="mt-2">
-                      <div className="border rounded p-2 min-h-[220px] bg-white">
-                        {/* CanvasEditor is the primary design surface. TinyMCE is used only inside the CanvasEditor when inserting rich text blocks. */}
-                        <CanvasEditor
-                          value={(getTplObj(editing.template_json).html) || ''}
-                          onChange={v => {
-                            try {
-                              const tplObj = getTplObj(editing.template_json);
-                              tplObj.html = v;
-                              setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
-                            } catch (err) { setEditing({ ...editing, template_json: JSON.stringify({ html: v }) }); }
-                          }}
-                          ref={canvasRef}
-                          showToolbox={false}
-                          onSelect={b => setSelectedBlock(b)}
-                          paperSize={(getTplObj(editing.template_json).paperSize || 'A4')}
-                          orientation={(getTplObj(editing.template_json).orientation || 'portrait')}
-                          margins={(getTplObj(editing.template_json).margins || { top: 20, right: 20, bottom: 20, left: 20 })}
-                        />
-                      </div>
-                      <div className="text-xs text-gray-500 mt-2">Drag datapoints from the panel to the right into the editor to insert placeholders or full tables. Use <code>{'{{question_QUESTIONID}}'}</code>, <code>{'{{activity_title}}'}</code>, <code>{'{{report_id}}'}</code>.</div>
-
-                      {/* Template settings moved to floating Preview Panel */}
+                {/* Canvas is primary design surface — full width and centered */}
+                <div className="w-full">
+                  <div className="mt-2 w-full">
+                    <div className="border rounded p-2 min-h-[320px] bg-white w-full">
+                      {/* CanvasEditor is the primary design surface. TinyMCE is used only inside the CanvasEditor when inserting rich text blocks. */}
+                      <CanvasEditor
+                        value={(getTplObj(editing.template_json).html) || ''}
+                        onChange={v => {
+                          try {
+                            const tplObj = getTplObj(editing.template_json);
+                            tplObj.html = v;
+                            setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                          } catch (err) { setEditing({ ...editing, template_json: JSON.stringify({ html: v }) }); }
+                        }}
+                        ref={canvasRef}
+                        showToolbox={false}
+                        showInspector={true}
+                        onSelect={b => setSelectedBlock(b)}
+                        paperSize={(getTplObj(editing.template_json).paperSize || 'A4')}
+                        orientation={(getTplObj(editing.template_json).orientation || 'portrait')}
+                        margins={(getTplObj(editing.template_json).margins || { top: 20, right: 20, bottom: 20, left: 20 })}
+                        className="w-full"
+                      />
                     </div>
                   </div>
-                    </div>
+                  <div className="text-xs text-gray-500 mt-2 text-center">Drag datapoints from the panel to the right into the editor to insert placeholders or full tables. Use <code>{'{{question_QUESTIONID}}'}</code>, <code>{'{{activity_title}}'}</code>, <code>{'{{report_id}}'}</code>.</div>
+                </div>
                 <div className="flex justify-end gap-2">
-                  <Button variant="secondary" onClick={() => setEditing(null)}>Cancel</Button>
+                  <Button variant="secondary" onClick={() => { setEditing(null); setPanelShown(false); }}>Cancel</Button>
                   <Button onClick={save}>Save Template</Button>
                 </div>
               </div>
@@ -261,43 +360,190 @@ const ReportBuilderPage: React.FC = () => {
         </div>
       </div>
 
-      {typeof document !== 'undefined' && createPortal(
-        <div ref={panelRef as any} style={{ position: 'fixed', left: panelPos.x, top: panelPos.y, width: 340, zIndex: 9999, maxHeight: '80vh', overflowY: 'auto' }} className="bg-white border rounded shadow-lg p-3">
+      {panelShown && typeof document !== 'undefined' && createPortal(
+        <div ref={panelRef as any} onDrop={async (e) => {
+          e.preventDefault();
+          // handle file drops: upload images and insert into canvas
+          try {
+            const files = Array.from(e.dataTransfer?.files || []) as File[];
+            for (const f of files) {
+              if (!f || !f.type || !f.type.startsWith || !f.type.startsWith('image/')) continue;
+              const reader = new FileReader();
+              reader.onload = async (ev) => {
+                const dataUrl = ev.target?.result as string;
+                try {
+                  const res = await apiFetch('/api/template_uploads', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: f.name, contentBase64: dataUrl, mimeType: f.type }) });
+                  if (res.ok) {
+                    const j = await res.json();
+                    const url = j.url || j.path || dataUrl;
+                    try { canvasRef.current?.insertHtml?.(`<img src="${url}" style="max-width:100%"/>`); } catch (err) { canvasRef.current?.insertImageUrl?.(); }
+                    // show a quick toast
+                    setToasts(t => [...t, { id: Date.now(), text: `Inserted image ${f.name}` }]);
+                  } else {
+                    canvasRef.current?.insertHtml?.(`<img src="${dataUrl}" style="max-width:100%"/>`);
+                    setToasts(t => [...t, { id: Date.now(), text: `Inserted image (local) ${f.name}` }]);
+                  }
+                } catch (err) {
+                  console.error('Upload failed', err);
+                  canvasRef.current?.insertHtml?.(`<img src="${dataUrl}" style="max-width:100%"/>`);
+                  setToasts(t => [...t, { id: Date.now(), text: `Inserted image (fallback) ${f.name}` }]);
+                }
+              };
+              reader.readAsDataURL(f as Blob);
+            }
+          } catch (err) { console.error('Panel drop handling failed', err); }
+        }} onDragOver={e => e.preventDefault()} style={{ position: 'fixed', left: panelPos.x, top: panelPos.y, width: panelSize.width, height: panelSize.height, zIndex: 9999, maxHeight: '90vh', overflowY: 'auto' }} className="bg-white border rounded shadow-lg p-3">
           <div className="cursor-move mb-2 font-medium flex items-center justify-between" onMouseDown={(e) => { try { dragRef.current.dragging = true; dragRef.current.startX = (e as any).clientX; dragRef.current.startY = (e as any).clientY; dragRef.current.origX = panelPos.x; dragRef.current.origY = panelPos.y; } catch (err) { } }}>
-            <div>Preview Panel</div>
-            <div className="text-xs text-gray-500">Drag to move</div>
-          </div>
+            <div className="flex items-center gap-2 w-full">
+              <div className="flex items-center gap-2">
+                <button className="text-xs p-1 rounded transition-transform" onClick={() => setPanelCollapsed(p => !p)} aria-label="Toggle Preview Panel">
+                  <svg className={`w-4 h-4 transform transition-transform ${panelCollapsed ? '' : 'rotate-180'}`} viewBox="0 0 20 20" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                    <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.25a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z" clipRule="evenodd" />
+                  </svg>
+                </button>
+                <div className="font-medium">Preview Panel</div>
+              </div>
 
-          <details className="mb-2 p-2 border rounded bg-gray-50">
-            <summary className="cursor-pointer font-medium">Toolbox</summary>
-            <div className="mt-2 grid grid-cols-1 gap-2">
-              <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertTextBlock?.()}>Insert Text</button>
-              <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertBlock?.()}>Insert Block</button>
-              <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertPlaceholder?.()}>Insert Placeholder</button>
-              <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertImageUrl?.()}>Insert Image</button>
-              <div className="flex gap-2">
-                <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomIn?.()}>Zoom +</button>
-                <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomOut?.()}>Zoom -</button>
+              <div className="flex-1 text-right">
+                <div className="text-xs text-gray-500">Drag to move</div>
               </div>
             </div>
-          </details>
+          </div>
 
-          <div className="text-xs text-gray-600 mb-2">Activity Fields</div>
-          {activityData ? (
-            <div className="mb-2 text-xs text-gray-700 max-h-40 overflow-auto border rounded p-2 bg-gray-50 space-y-1">
-              {Object.keys(activityData).slice(0, 100).map(field => (
-                <div key={field} draggable onDragStart={e => {
-                  e.dataTransfer.setData('text/plain', `{{activity_${field}}}`);
-                  try { e.dataTransfer.setData('application/json', JSON.stringify({ type: 'activity_field', field })); } catch (err) { }
-                }} className="p-1 rounded hover:bg-gray-100 cursor-move flex justify-between items-center">
-                  <div className="truncate font-medium text-xs">{field}</div>
-                  <div className="text-gray-500 text-xs font-mono truncate ml-2">{String(activityData[field] ?? '')}</div>
+          {/* Panel contents collapsed by default */}
+          {!panelCollapsed && (
+            <>
+              <div className="mb-2">
+                <label className="block text-xs text-gray-500">Report Name</label>
+                <input dir="ltr" className="mt-1 block w-full border rounded p-2 text-sm" value={editing?.name || ''} onChange={e => setEditing(prev => ({ ...(prev || { id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '' }) }), name: e.target.value }))} />
+              </div>
+              <div className="mb-2">
+                <label className="block text-xs text-gray-500">Activity (optional)</label>
+                <select className="mt-1 block w-full border rounded p-2 text-sm" value={editing?.activity_id || ''} onChange={e => setEditing(prev => ({ ...(prev || { id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '' }) }), activity_id: e.target.value || null }))}>
+                  <option value="">(Any activity)</option>
+                  {activities.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
+                </select>
+              </div>
+
+              {/* Inspector moved above Toolbox — click an object to view/edit properties */}
+              {selectedBlock && (
+                <div className="mt-3 p-2 border rounded bg-white text-xs">
+                  <div className="font-medium mb-1">Selected Block</div>
+                  {selectedBlock.type === 'placeholder' ? (
+                    <>
+                      <div className="mb-2 text-xs text-gray-600">Editing placeholder. You can change its label or metadata.</div>
+                      <div className="mb-2">
+                        <label className="block text-xs text-gray-500">Label</label>
+                        <input dir="ltr" className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.label) || ''} onChange={e => setBlockEditHtml(e.target.value)} />
+                      </div>
+                      <div className="mb-2">
+                        <label className="block text-xs text-gray-500">Question ID</label>
+                        <input className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.qid) || ''} readOnly />
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <button className="p-1 border rounded text-xs" onClick={() => { setSelectedBlock(null); }}>Close</button>
+                        <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
+                          try {
+                            const tplObj = getTplObj(editing.template_json);
+                            const parser = new DOMParser();
+                            const doc = parser.parseFromString(tplObj.html || '', 'text/html');
+                            const qid = selectedBlock.meta && selectedBlock.meta.qid;
+                            let el = qid ? doc.querySelector(`span.tpl-placeholder[data-qid="${qid}"]`) : null;
+                            if (!el) {
+                              const label = (selectedBlock.meta && selectedBlock.meta.label) || '';
+                              el = Array.from(doc.querySelectorAll('span.tpl-placeholder')).find(s => s.textContent === label) as HTMLElement | undefined || null;
+                            }
+                            if (el) {
+                              const newLabel = blockEditHtml || (selectedBlock.meta && selectedBlock.meta.label) || el.textContent || '';
+                              el.textContent = newLabel;
+                              el.setAttribute('data-label', newLabel);
+                              tplObj.html = doc.body ? doc.body.innerHTML : tplObj.html;
+                              setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                              setSelectedBlock({ ...selectedBlock, html: el.outerHTML, meta: { ...(selectedBlock.meta || {}), label: newLabel } });
+                            }
+                          } catch (e) { console.error('Failed to update placeholder', e); }
+                        }}>Save</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="mb-2 text-xs text-gray-600">Edit HTML / position for the selected positioned block.</div>
+                      <div className="mb-2">
+                        <label className="block text-xs text-gray-500">Left (px)</label>
+                        <input type="number" className="w-full border p-1 text-sm" value={String(blockEditLeft)} onChange={e => setBlockEditLeft(e.target.value)} />
+                      </div>
+                      <div className="mb-2">
+                        <label className="block text-xs text-gray-500">Top (px)</label>
+                        <input type="number" className="w-full border p-1 text-sm" value={String(blockEditTop)} onChange={e => setBlockEditTop(e.target.value)} />
+                      </div>
+                      <div className="mb-2">
+                        <label className="block text-xs text-gray-500">Inner HTML</label>
+                        <textarea dir="ltr" className="w-full border p-1 text-sm" rows={3} value={blockEditHtml} onChange={e => setBlockEditHtml(e.target.value)} />
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <button className="p-1 border rounded text-xs" onClick={() => {
+                          if (!selectedBlock) return;
+                          setConfirmState({
+                            open: true, message: 'Remove this block?', onConfirm: () => {
+                              try {
+                                const tplObj = getTplObj(editing?.template_json);
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(tplObj.html || '', 'text/html');
+                                const el = doc.querySelector(`div.tpl-block[data-block-id="${selectedBlock.id}"]`);
+                                if (el) el.remove();
+                                tplObj.html = doc.body ? doc.body.innerHTML : tplObj.html;
+                                setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                                setSelectedBlock(null);
+                                setToasts(t => [...t, { id: Date.now(), text: 'Block removed' }]);
+                              } catch (e) { console.error(e); setToasts(t => [...t, { id: Date.now(), text: 'Failed to remove block' }]); }
+                              setConfirmState({ open: false, message: '' });
+                            }
+                          });
+                        }}>Remove</button>
+                        <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
+                          if (!selectedBlock) return;
+                          applyBlockUpdate(selectedBlock.id, { left: Number(blockEditLeft || 0), top: Number(blockEditTop || 0), html: blockEditHtml });
+                          setSelectedBlock({ ...selectedBlock, left: Number(blockEditLeft || 0), top: Number(blockEditTop || 0), html: blockEditHtml });
+                        }}>Save</button>
+                      </div>
+                    </>
+                  )}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-xs text-gray-400 mb-2">No activity selected.</div>
+              )}
+
+              <details className="mb-2 p-2 border rounded bg-gray-50">
+                <summary className="cursor-pointer font-medium">Toolbox</summary>
+                <div className="mt-2 grid grid-cols-1 gap-2">
+                  <div>
+                    <label className="block text-xs text-gray-500">Rich Text Editor</label>
+                    <select className="mt-1 block w-full border rounded p-2 text-sm" value={richTextMode} onChange={e => { setRichTextMode(e.target.value as any); try { localStorage.setItem('reportBuilderRichTextMode', e.target.value); } catch (err) { } }}>
+                      <option value="wysiwyg">TinyMCE / WYSIWYG</option>
+                      <option value="builtin">Built-in RichTextEditor</option>
+                      <option value="none">Disable rich text</option>
+                    </select>
+                    <div className="mt-2 text-xs text-gray-500 flex items-center gap-2"><input id="disableRT" type="checkbox" checked={disableRichText} onChange={e => { setDisableRichText(e.target.checked); try { localStorage.setItem('reportBuilderDisableRichText', e.target.checked ? '1' : '0'); } catch (err) { } }} /> <label htmlFor="disableRT">Disable rich text entirely</label></div>
+                  </div>
+                  <button className="w-full p-2 border rounded text-sm text-left" onClick={() => { if (disableRichText || richTextMode === 'none') { setComposeHtml('<div><p>New text</p></div>'); setComposeOpen(true); } else { setComposeHtml(''); setComposeOpen(true); } }}>Insert Text</button>
+                  <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertBlock?.()}>Insert Block</button>
+                  <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertPlaceholder?.()}>Insert Placeholder</button>
+                  <div className="flex gap-2">
+                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => fileInputRef.current?.click()}>Insert Image (upload)</button>
+                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.insertImageUrl?.()}>Insert Image (URL)</button>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => { try { canvasRef.current?.undo?.(); } catch (e) { document.execCommand && document.execCommand('undo'); } }}>Undo</button>
+                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => { try { canvasRef.current?.redo?.(); } catch (e) { document.execCommand && document.execCommand('redo'); } }}>Redo</button>
+                  </div>
+                  <div className="flex gap-2">
+                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomIn?.()}>Zoom +</button>
+                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomOut?.()}>Zoom -</button>
+                  </div>
+                </div>
+              </details>
+            </>
           )}
+
+
 
           {/* Template Settings moved into floating panel */}
           <details className="mb-3 p-2 border rounded bg-gray-50">
@@ -334,24 +580,7 @@ const ReportBuilderPage: React.FC = () => {
                     <option value="image">Image</option>
                   </select>
                 </div>
-                <div>
-                  <label className="block text-xs text-gray-500">Header Image</label>
-                  <input type="file" accept="image/*" onChange={async e => {
-                    const f = e.target.files?.[0]; if (!f) return;
-                    try {
-                      const reader = new FileReader();
-                      reader.onload = async (ev) => {
-                        const dataUrl = ev.target?.result as string;
-                        try {
-                          const res = await apiFetch('/api/template_uploads', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: f.name, contentBase64: dataUrl, mimeType: f.type }) });
-                          if (res.ok) { const j = await res.json(); const tplObj = getTplObj(editing?.template_json); tplObj.headerImage = j.url; setEditing({ ...editing, template_json: JSON.stringify(tplObj) }); return; }
-                        } catch (err) { console.error('Upload failed', err); }
-                        const tplObj = getTplObj(editing?.template_json); tplObj.headerImage = dataUrl; setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
-                      };
-                      reader.readAsDataURL(f);
-                    } catch (err) { console.error(err); }
-                  }} />
-                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-xs text-gray-500">Margins (Top)</label>
@@ -379,7 +608,7 @@ const ReportBuilderPage: React.FC = () => {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500">Footer Image</label>
+                  <label className="block text-xs text-gray-500">Header Image</label>
                   <input type="file" accept="image/*" onChange={async e => {
                     const f = e.target.files?.[0]; if (!f) return;
                     try {
@@ -388,16 +617,16 @@ const ReportBuilderPage: React.FC = () => {
                         const dataUrl = ev.target?.result as string;
                         try {
                           const res = await apiFetch('/api/template_uploads', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: f.name, contentBase64: dataUrl, mimeType: f.type }) });
-                          if (res.ok) { const j = await res.json(); const tplObj = getTplObj(editing?.template_json); tplObj.footerImage = j.url; setEditing({ ...editing, template_json: JSON.stringify(tplObj) }); return; }
+                          if (res.ok) { const j = await res.json(); const tplObj = getTplObj(editing?.template_json); tplObj.headerImage = j.url; setEditing({ ...editing, template_json: JSON.stringify(tplObj) }); return; }
                         } catch (err) { console.error('Upload failed', err); }
-                        const tplObj = getTplObj(editing?.template_json); tplObj.footerImage = dataUrl; setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                        const tplObj = getTplObj(editing?.template_json); tplObj.headerImage = dataUrl; setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
                       };
                       reader.readAsDataURL(f);
                     } catch (err) { console.error(err); }
                   }} />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500">Watermark Image</label>
+                  <label className="block text-xs text-gray-500">Watermark Image(center)</label>
                   <input type="file" accept="image/*" onChange={async e => {
                     const f = e.target.files?.[0]; if (!f) return;
                     try {
@@ -415,6 +644,25 @@ const ReportBuilderPage: React.FC = () => {
                   }} />
                 </div>
                 <div>
+                  <label className="block text-xs text-gray-500">Footer Image</label>
+                  <input type="file" accept="image/*" onChange={async e => {
+                    const f = e.target.files?.[0]; if (!f) return;
+                    try {
+                      const reader = new FileReader();
+                      reader.onload = async (ev) => {
+                        const dataUrl = ev.target?.result as string;
+                        try {
+                          const res = await apiFetch('/api/template_uploads', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: f.name, contentBase64: dataUrl, mimeType: f.type }) });
+                          if (res.ok) { const j = await res.json(); const tplObj = getTplObj(editing?.template_json); tplObj.footerImage = j.url; setEditing({ ...editing, template_json: JSON.stringify(tplObj) }); return; }
+                        } catch (err) { console.error('Upload failed', err); }
+                        const tplObj = getTplObj(editing?.template_json); tplObj.footerImage = dataUrl; setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                      };
+                      reader.readAsDataURL(f);
+                    } catch (err) { console.error(err); }
+                  }} />
+                </div>
+
+                <div>
                   <label className="block text-xs text-gray-500">Assets (JSON)</label>
                   <input className="mt-1 block w-full border rounded p-2 text-sm" value={(getTplObj(editing?.template_json).assets ? JSON.stringify(getTplObj(editing?.template_json).assets) : '') || ''} onChange={e => {
                     try { const tplObj = getTplObj(editing?.template_json); tplObj.assets = e.target.value ? JSON.parse(e.target.value) : null; setEditing({ ...editing, template_json: JSON.stringify(tplObj) }); } catch (err) { /* ignore parse errors while typing */ }
@@ -423,129 +671,178 @@ const ReportBuilderPage: React.FC = () => {
               </div>
             </div>
           </details>
-
-          <div className="max-h-40 overflow-auto space-y-2 mb-2">
-            <div className="font-medium text-sm">Questions</div>
-            {questionsList.length === 0 && <div className="text-xs text-gray-400">No questions for selected activity.</div>}
-            {questionsList.map((q:any) => {
-              const qid = String(q.id);
-              return (
-                <div key={qid} className="p-2 border rounded bg-gray-50 hover:bg-gray-100 text-xs flex items-center justify-between">
-                  <div draggable onDragStart={e => {
-                    const label = (q.fieldName || q.field_name) ? `${q.fieldName || q.field_name}` : (q.questionText || q.question_text || `Question ${qid}`);
-                    e.dataTransfer.setData('text/plain', `{{question_${qid}}}`);
-                    try { e.dataTransfer.setData('application/json', JSON.stringify({ type: 'question', id: qid, label })); } catch (err) { /* ignore */ }
-                  }} className="cursor-move flex items-center gap-2">
-                    <div className="font-medium truncate">{(q.fieldName || q.field_name) ? `${q.fieldName || q.field_name}` : (q.questionText || q.question_text || `Question ${qid}`)}</div>
+          <details className="mb-2">
+            <summary className="cursor-pointer text-xs font-medium">Activity Fields</summary>
+            {activityData ? (
+              <div className="mt-2 mb-2 text-xs text-gray-700 max-h-40 overflow-auto border rounded p-2 bg-gray-50 space-y-1">
+                {Object.keys(activityData).slice(0, 100).map(field => (
+                  <div key={field} draggable onDragStart={e => {
+                    e.dataTransfer.setData('text/plain', `{{activity_${field}}}`);
+                    try { e.dataTransfer.setData('application/json', JSON.stringify({ type: 'activity_field', field })); } catch (err) { }
+                  }} className="p-1 rounded hover:bg-gray-100 cursor-move flex justify-between items-center">
+                    <div className="truncate font-medium text-xs">{field}</div>
+                    <div className="text-gray-500 text-xs font-mono truncate ml-2">{String(activityData[field] ?? '')}</div>
                   </div>
-                  <div className="text-gray-400">{q.answer_type || q.answerType || ''}</div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="mt-2 max-h-44 overflow-auto">
-            <div className="font-medium">Uploaded Tables (headers)</div>
-            {uploadedDocs.length === 0 && <div className="text-xs text-gray-400">No uploaded tables for this activity.</div>}
-            {uploadedDocs.map((doc:any) => (
-              <div key={doc.id} draggable onDragStart={e => {
-                let headersHtml = buildTableHeadersHtml(doc);
-                headersHtml = headersHtml.replace('<div class="uploaded-table-wrapper">', `<div class="uploaded-table-wrapper" data-upload-id="${doc.id}">`);
-                e.dataTransfer.setData('text/plain', `uploaded_table_headers:${doc.id}`);
-                e.dataTransfer.setData('text/html', headersHtml);
-              }} className="p-2 border rounded bg-white hover:bg-gray-50 cursor-move text-xs flex items-center justify-between">
-                <div className="font-medium truncate">{doc.filename || `File ${doc.id}`}</div>
-                <div className="text-gray-400">{(Array.isArray(doc.file_content) ? doc.file_content.length : (Array.isArray(doc.dataset_data) ? doc.dataset_data.length : 0))} rows</div>
+                ))}
               </div>
-            ))}
-          </div>
+            ) : (
+              <div className="mt-2 text-xs text-gray-400">No activity selected.</div>
+            )}
+          </details>
 
-          {selectedBlock && (
-            <div className="mt-3 p-2 border rounded bg-white text-xs">
-              <div className="font-medium mb-1">Selected Block</div>
-              {selectedBlock.type === 'placeholder' ? (
-                <>
-                  <div className="mb-2 text-xs text-gray-600">Editing placeholder. You can change its label or metadata.</div>
-                  <div className="mb-2">
-                    <label className="block text-xs text-gray-500">Label</label>
-                    <input className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.label) || ''} onChange={e => setBlockEditHtml(e.target.value)} />
+          <details className="mb-2">
+            <summary className="cursor-pointer font-medium text-sm">Questions</summary>
+            <div className="mt-2 max-h-40 overflow-auto space-y-2 mb-2">
+              {questionsList.length === 0 && <div className="text-xs text-gray-400">No questions for selected activity.</div>}
+              {questionsList.map((q: any) => {
+                const qid = String(q.id);
+                return (
+                  <div key={qid} className="p-2 border rounded bg-gray-50 hover:bg-gray-100 text-xs flex items-center justify-between">
+                    <div draggable onDragStart={e => {
+                      const label = (q.fieldName || q.field_name) ? `${q.fieldName || q.field_name}` : (q.questionText || q.question_text || `Question ${qid}`);
+                      e.dataTransfer.setData('text/plain', `{{question_${qid}}}`);
+                      try { e.dataTransfer.setData('application/json', JSON.stringify({ type: 'question', id: qid, label })); } catch (err) { /* ignore */ }
+                    }} className="cursor-move flex items-center gap-2">
+                      <div className="font-medium truncate">{(q.fieldName || q.field_name) ? `${q.fieldName || q.field_name}` : (q.questionText || q.question_text || `Question ${qid}`)}</div>
+                    </div>
+                    <div className="text-gray-400">{q.answer_type || q.answerType || ''}</div>
                   </div>
-                  <div className="mb-2">
-                    <label className="block text-xs text-gray-500">Question ID</label>
-                    <input className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.qid) || ''} readOnly />
-                  </div>
-                  <div className="flex gap-2 justify-end">
-                    <button className="p-1 border rounded text-xs" onClick={() => { setSelectedBlock(null); }}>Close</button>
-                    <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
-                      try {
-                        const tplObj = getTplObj(editing.template_json);
-                        const parser = new DOMParser();
-                        const doc = parser.parseFromString(tplObj.html || '', 'text/html');
-                        const qid = selectedBlock.meta && selectedBlock.meta.qid;
-                        let el = qid ? doc.querySelector(`span.tpl-placeholder[data-qid="${qid}"]`) : null;
-                        if (!el) {
-                          const label = (selectedBlock.meta && selectedBlock.meta.label) || '';
-                          el = Array.from(doc.querySelectorAll('span.tpl-placeholder')).find(s => s.textContent === label) as HTMLElement | undefined || null;
-                        }
-                        if (el) {
-                          const newLabel = blockEditHtml || (selectedBlock.meta && selectedBlock.meta.label) || el.textContent || '';
-                          el.textContent = newLabel;
-                          el.setAttribute('data-label', newLabel);
-                          tplObj.html = doc.body ? doc.body.innerHTML : tplObj.html;
-                          setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
-                          setSelectedBlock({ ...selectedBlock, html: el.outerHTML, meta: { ...(selectedBlock.meta || {}), label: newLabel } });
-                        }
-                      } catch (e) { console.error('Failed to update placeholder', e); }
-                    }}>Save</button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="mb-2 text-xs text-gray-600">Edit HTML / position for the selected positioned block.</div>
-                  <div className="mb-2">
-                    <label className="block text-xs text-gray-500">Left (px)</label>
-                    <input type="number" className="w-full border p-1 text-sm" value={String(blockEditLeft)} onChange={e => setBlockEditLeft(e.target.value)} />
-                  </div>
-                  <div className="mb-2">
-                    <label className="block text-xs text-gray-500">Top (px)</label>
-                    <input type="number" className="w-full border p-1 text-sm" value={String(blockEditTop)} onChange={e => setBlockEditTop(e.target.value)} />
-                  </div>
-                  <div className="mb-2">
-                    <label className="block text-xs text-gray-500">Inner HTML</label>
-                    <textarea className="w-full border p-1 text-sm" rows={3} value={blockEditHtml} onChange={e => setBlockEditHtml(e.target.value)} />
-                  </div>
-                  <div className="flex gap-2 justify-end">
-                    <button className="p-1 border rounded text-xs" onClick={() => {
-                      if (!selectedBlock) return;
-                      if (!confirm('Remove this block?')) return;
-                      try {
-                        const tplObj = getTplObj(editing?.template_json);
-                        const parser = new DOMParser();
-                        const doc = parser.parseFromString(tplObj.html || '', 'text/html');
-                        const el = doc.querySelector(`div.tpl-block[data-block-id="${selectedBlock.id}"]`);
-                        if (el) el.remove();
-                        tplObj.html = doc.body ? doc.body.innerHTML : tplObj.html;
-                        setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
-                        setSelectedBlock(null);
-                      } catch (e) { console.error(e); }
-                    }}>Remove</button>
-                    <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
-                      if (!selectedBlock) return;
-                      applyBlockUpdate(selectedBlock.id, { left: Number(blockEditLeft || 0), top: Number(blockEditTop || 0), html: blockEditHtml });
-                      setSelectedBlock({ ...selectedBlock, left: Number(blockEditLeft || 0), top: Number(blockEditTop || 0), html: blockEditHtml });
-                    }}>Save</button>
-                  </div>
-                </>
-              )}
+                );
+              })}
             </div>
-          )}
+          </details>
+
+          <details className="mt-2 mb-2">
+            <summary className="cursor-pointer font-medium text-sm">Uploaded Tables</summary>
+            <div className="mt-2 max-h-44 overflow-auto">
+              {uploadedDocs.length === 0 && <div className="text-xs text-gray-400">No uploaded tables for this activity.</div>}
+              {uploadedDocs.map((doc: any) => (
+                <div key={doc.id} draggable onDragStart={e => {
+                  let headersHtml = buildTableHeadersHtml(doc);
+                  headersHtml = headersHtml.replace('<div class="uploaded-table-wrapper">', `<div class="uploaded-table-wrapper" data-upload-id="${doc.id}">`);
+                  e.dataTransfer.setData('text/plain', `uploaded_table_headers:${doc.id}`);
+                  e.dataTransfer.setData('text/html', headersHtml);
+                }} className="p-2 border rounded bg-white hover:bg-gray-50 cursor-move text-xs flex items-center justify-between">
+                  <div className="font-medium truncate">{doc.filename || `File ${doc.id}`}</div>
+                  <div className="text-gray-400">{(Array.isArray(doc.file_content) ? doc.file_content.length : (Array.isArray(doc.dataset_data) ? doc.dataset_data.length : 0))} rows</div>
+                </div>
+              ))}
+            </div>
+          </details>
+
+
 
           <div className="flex items-center justify-between mt-2">
             <div className="text-xs text-gray-500">Drag items into the editor to insert their placeholder or table headers.</div>
             <Button size="xs" variant="secondary" onClick={() => setIsGuideOpen(true)}>Guide</Button>
           </div>
+          {/* Resize handles */}
+          <div onMouseDown={(e) => {
+            e.stopPropagation();
+            resizeRef.current.resizing = true;
+            resizeRef.current.dir = 'se';
+            resizeRef.current.startX = (e as any).clientX;
+            resizeRef.current.startY = (e as any).clientY;
+            resizeRef.current.origW = panelSize.width;
+            resizeRef.current.origH = panelSize.height;
+            resizeRef.current.origLeft = panelPos.x;
+            resizeRef.current.origTop = panelPos.y;
+          }} style={{ position: 'absolute', right: 8, bottom: 8, width: 18, height: 18, cursor: 'se-resize', zIndex: 10000 }} title="Resize panel">
+            <div className="w-full h-full bg-gray-100 rounded flex items-center justify-center border">
+              <svg viewBox="0 0 24 24" width="12" height="12" className="opacity-70"><path d="M7 17l10-10M11 17l6-6M15 17l2-2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" /></svg>
+            </div>
+          </div>
+
+          {/* left handle visible grip */}
+          <div onMouseDown={(e) => {
+            e.stopPropagation();
+            resizeRef.current.resizing = true;
+            resizeRef.current.dir = 'w';
+            resizeRef.current.startX = (e as any).clientX;
+            resizeRef.current.startY = (e as any).clientY;
+            resizeRef.current.origW = panelSize.width;
+            resizeRef.current.origH = panelSize.height;
+            resizeRef.current.origLeft = panelPos.x;
+            resizeRef.current.origTop = panelPos.y;
+          }} style={{ position: 'absolute', left: 6, bottom: 8, width: 18, height: 22, cursor: 'ew-resize', zIndex: 10000 }} title="Resize from left (drag)">
+            <div className="w-full h-full flex items-center justify-center">
+              <svg viewBox="0 0 24 24" width="10" height="18" className="opacity-60"><g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M6 6h8" /><path d="M6 12h8" /><path d="M6 18h8" /></g></svg>
+            </div>
+          </div>
+          {/* top handle visible grip */}
+          <div onMouseDown={(e) => {
+            e.stopPropagation();
+            resizeRef.current.resizing = true;
+            resizeRef.current.dir = 'n';
+            resizeRef.current.startX = (e as any).clientX;
+            resizeRef.current.startY = (e as any).clientY;
+            resizeRef.current.origW = panelSize.width;
+            resizeRef.current.origH = panelSize.height;
+            resizeRef.current.origLeft = panelPos.x;
+            resizeRef.current.origTop = panelPos.y;
+          }} style={{ position: 'absolute', right: 8, top: 6, width: 36, height: 16, cursor: 'ns-resize', zIndex: 10000 }} title="Resize from top (drag)">
+            <div className="w-full h-full flex items-center justify-center">
+              <svg viewBox="0 0 24 24" width="20" height="8" className="opacity-60"><g stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M6 6h12" /><path d="M6 10h12" /></g></svg>
+            </div>
+          </div>
         </div>, document.body
-      )}
+      )
+      }
+
+      {/* hidden file input for inserting images */}
+      <input ref={fileInputRef as any} type="file" accept="image/*" style={{ display: 'none' }} onChange={async (ev) => {
+        const f = ev.target.files?.[0];
+        if (!f) return;
+        try {
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            const dataUrl = e.target?.result as string;
+            try {
+              const res = await apiFetch('/api/template_uploads', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: f.name, contentBase64: dataUrl, mimeType: f.type }) });
+              if (res.ok) {
+                const j = await res.json();
+                const url = j.url || j.path || dataUrl;
+                // prefer inserting as a positioned block so it can be moved freely
+                try { canvasRef.current?.insertBlock?.({ html: `<img src="${url}" style="max-width:100%"/>`, left: 60, top: 60 }); } catch (e) { try { canvasRef.current?.insertHtml?.(`<img src="${url}" style="max-width:100%"/>`); } catch (err) { canvasRef.current?.insertImageUrl?.(); } }
+              } else {
+                // fallback to data URL insertion (try positioned block first)
+                try { canvasRef.current?.insertBlock?.({ html: `<img src="${dataUrl}" style="max-width:100%"/>`, left: 60, top: 60 }); } catch (err) { canvasRef.current?.insertHtml?.(`<img src="${dataUrl}" style="max-width:100%"/>`); }
+              }
+            } catch (err) {
+              console.error('Upload failed', err);
+              try { canvasRef.current?.insertBlock?.({ html: `<img src="${dataUrl}" style="max-width:100%"/>`, left: 60, top: 60 }); } catch (err2) { canvasRef.current?.insertHtml?.(`<img src="${dataUrl}" style="max-width:100%"/>`); }
+            }
+          };
+          reader.readAsDataURL(f);
+        } catch (err) { console.error('Image read failed', err); }
+        // reset input
+        (ev.target as HTMLInputElement).value = '';
+      }} />
+
+      {/* Compose modal for inserting rich text / blocks */}
+      <Modal isOpen={composeOpen} onClose={() => setComposeOpen(false)} title="Compose Text Block" size="lg">
+        <div>
+          {disableRichText || richTextMode === 'none' ? (
+            <textarea dir="ltr" className="w-full h-48 border p-2" value={composeHtml} onChange={e => setComposeHtml(e.target.value)} />
+          ) : (richTextMode === 'builtin' ? (
+            <RichTextEditor value={composeHtml} onChange={v => setComposeHtml(v)} />
+          ) : (
+            <WysiwygEditor value={composeHtml} onChange={v => setComposeHtml(v)} />
+          ))}
+          <div className="flex justify-end gap-2 mt-3">
+            <button className="p-2 border rounded" onClick={() => setComposeOpen(false)}>Cancel</button>
+            <button className="p-2 bg-primary-600 text-white rounded" onClick={() => {
+              try {
+                // try to insert as positioned block so it can be moved and printed in place
+                canvasRef.current?.insertBlock?.({ html: composeHtml || '<div></div>', left: 60, top: 60 });
+              } catch (err) {
+                try { canvasRef.current?.insertHtml?.(composeHtml || '<div></div>'); } catch (e) { console.error('Insert failed', e); }
+              }
+              setComposeOpen(false);
+            }}>Insert</button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal isOpen={isPreviewOpen} onClose={() => { setIsPreviewOpen(false); setEditing(null); }} title={`Preview Template ${editing?.name || ''}`} size="xl">
         <div className="prose max-w-full">
@@ -636,7 +933,28 @@ const ReportBuilderPage: React.FC = () => {
           </ul>
         </div>
       </Modal>
-    </div>
+      {/* Confirm modal (simple) */}
+      {
+        confirmState.open && (
+          <Modal isOpen={confirmState.open} onClose={() => setConfirmState({ open: false, message: '' })} title="Confirm" size="sm">
+            <div className="text-sm p-2">{confirmState.message}</div>
+            <div className="flex justify-end gap-2 mt-3">
+              <button className="p-2 border rounded" onClick={() => setConfirmState({ open: false, message: '' })}>Cancel</button>
+              <button className="p-2 bg-primary-600 text-white rounded" onClick={() => { try { confirmState.onConfirm && confirmState.onConfirm(); } catch (e) { setConfirmState({ open: false, message: '' }); } }}>Confirm</button>
+            </div>
+          </Modal>
+        )
+      }
+
+      {/* Toasts */}
+      <div style={{ position: 'fixed', right: 16, top: 16, zIndex: 99999 }}>
+        <div className="flex flex-col items-end space-y-2">
+          {toasts.map(t => (
+            <div key={t.id} className="bg-black/80 text-white text-sm px-3 py-2 rounded shadow">{t.text}</div>
+          ))}
+        </div>
+      </div>
+    </div >
   );
 };
 
