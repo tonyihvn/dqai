@@ -27,10 +27,11 @@ interface QuestionEditorProps {
   moveQuestion: (p: number, s: number, q: number, dir: 'up' | 'down') => void;
   deleteQuestion: (p: number, s: number, q: number) => void;
   updateQuestion: (p: number, s: number, q: number, val: Partial<Question>) => void;
+  onOpenDatasetModal?: (p: number, s: number, q: number) => void;
 }
 
 const QuestionEditor: React.FC<QuestionEditorProps> = ({
-  question, pIdx, sIdx, qIdx, isFirst, isLast, errors, moveQuestion, deleteQuestion, updateQuestion
+  question, pIdx, sIdx, qIdx, isFirst, isLast, errors, moveQuestion, deleteQuestion, updateQuestion, onOpenDatasetModal
 }) => {
   const hasOptions = [AnswerType.DROPDOWN, AnswerType.RADIO, AnswerType.CHECKBOX].includes(question.answerType);
   const isFile = question.answerType === AnswerType.FILE;
@@ -170,6 +171,11 @@ const QuestionEditor: React.FC<QuestionEditorProps> = ({
                   }
                 }}
               />
+              <div className="mt-2 flex items-center gap-2">
+                <button type="button" onClick={() => { if (typeof onOpenDatasetModal === 'function') onOpenDatasetModal(pIdx, sIdx, qIdx); }} className="text-sm text-primary-600 hover:underline">Load from API</button>
+                <span className="text-xs text-gray-400">·</span>
+                <div className="text-xs text-gray-500">or</div>
+              </div>
               {errors?.options && (
                 <p className="mt-1 text-xs text-red-600 flex items-center">
                   <ExclamationCircleIcon className="h-3 w-3 mr-1" />
@@ -193,6 +199,8 @@ const QuestionEditor: React.FC<QuestionEditorProps> = ({
               </div>
             </div>
           )}
+
+            {/* Dataset modal is rendered at the page level to avoid referencing page-level state from inside QuestionEditor */}
 
           {question.answerType === AnswerType.COMPUTED && (
             <div className="mt-4">
@@ -270,6 +278,14 @@ const BuildFormPage: React.FC = () => {
   const [activePageIndex, setActivePageIndex] = useState(0);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+  const [isDatasetModalOpen, setIsDatasetModalOpen] = useState(false);
+  const [datasetsList, setDatasetsList] = useState<any[]>([]);
+  const [dsLoading, setDsLoading] = useState(false);
+  const [dsSelectedForQuestion, setDsSelectedForQuestion] = useState<{pIdx:number,sIdx:number,qIdx:number} | null>(null);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
+  const [selectedLabelField, setSelectedLabelField] = useState<string>('');
+  const [selectedValueField, setSelectedValueField] = useState<string>('');
+  const [datasetSampleRows, setDatasetSampleRows] = useState<any[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, QuestionErrors>>({});
 
   useEffect(() => {
@@ -748,6 +764,7 @@ const BuildFormPage: React.FC = () => {
                   moveQuestion={moveQuestion}
                   deleteQuestion={deleteQuestion}
                   updateQuestion={updateQuestion}
+                  onOpenDatasetModal={(p, s, q) => { setDsSelectedForQuestion({ pIdx: p, sIdx: s, qIdx: q }); setIsDatasetModalOpen(true); setDatasetsList([]); }}
                 />
               ))}
 
@@ -812,6 +829,124 @@ const BuildFormPage: React.FC = () => {
           <p><strong>Computed Fields:</strong> Use the <code>Computed</code> question type to create fields calculated from other fields. Assign a unique <em>Field Name</em> and enter a formula using those names (e.g. <code>field_a + field_b * 2</code>).</p>
           <p><strong>Visibility / Conditional Logic:</strong> To make a question appear only under certain conditions, expand that question in the Form Builder and edit the <strong>Visibility Condition (Show If)</strong> field under the question's advanced settings. Enter a JavaScript-like expression referencing other questions by their <em>Field Name</em>. Examples: <code>age &gt; 18</code>, <code>facility === 'Nairobi' &amp;&amp; score &gt;= 50</code>, or <code>!!name</code> (shows when name is non-empty).</p>
           <p><strong>Validation:</strong> Questions marked with <span className="text-red-500">*</span> must have text, and selection types must have options.</p>
+        </div>
+      </Modal>
+      {/* Dataset selector modal (uses page-level state) */}
+      <Modal size="lg" isOpen={isDatasetModalOpen} onClose={() => { setIsDatasetModalOpen(false); setSelectedDatasetId(null); setDatasetSampleRows([]); setSelectedLabelField(''); setSelectedValueField(''); }} title="Load Options From Dataset">
+        <div className="space-y-4">
+          <div>
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold">Select a dataset</h3>
+              <button className="text-sm text-gray-500" onClick={async () => {
+                setDsLoading(true);
+                try {
+                  const r = await fetch('/api/admin/datasets');
+                  const j = await r.json();
+                  setDatasetsList(Array.isArray(j) ? j : []);
+                } catch (e) { console.error('Failed to fetch datasets', e); setDatasetsList([]); }
+                setDsLoading(false);
+              }}>Refresh</button>
+            </div>
+            <div className="mt-2">
+              {dsLoading && <div className="text-sm text-gray-500">Loading...</div>}
+              {!dsLoading && datasetsList.length === 0 && <div className="text-sm text-gray-400">No datasets found. Create datasets in Settings → Datasets.</div>}
+              {!dsLoading && datasetsList.length > 0 && (
+                <div className="space-y-2 max-h-40 overflow-auto">
+                  {datasetsList.map(ds => (
+                    <div key={ds.id} className={`p-2 border rounded ${selectedDatasetId === ds.id ? 'border-primary-500 bg-primary-50' : 'border-gray-200'}`} onClick={async () => {
+                      setSelectedDatasetId(ds.id);
+                      // fetch sample rows and fields
+                      try {
+                        const detailsRes = await fetch(`/api/admin/datasets/${ds.id}`);
+                        const details = await detailsRes.json();
+                        let fields: string[] = [];
+                        if (Array.isArray(details.dataset_fields) && details.dataset_fields.length) {
+                          fields = details.dataset_fields.map((f:any) => f.name).filter(Boolean);
+                        }
+                        const contentRes = await fetch(`/api/admin/datasets/${ds.id}/content?limit=50`);
+                        const contentJson = await contentRes.json();
+                        const sampleRows = Array.isArray(contentJson.rows) ? contentJson.rows.map((rr:any) => rr.dataset_data || {}) : [];
+                        setDatasetSampleRows(sampleRows || []);
+                        // If no dataset_fields, infer from sample
+                        if (!fields.length) {
+                          const inferred = new Set<string>();
+                          (sampleRows || []).slice(0,5).forEach((r:any) => { if (r && typeof r === 'object') Object.keys(r).forEach(k => inferred.add(k)); });
+                          fields = Array.from(inferred);
+                        }
+                        // populate selects defaults
+                        setSelectedLabelField(fields[0] || '');
+                        setSelectedValueField(fields[0] || '');
+                      } catch (e) { console.error(e); setDatasetSampleRows([]); setSelectedLabelField(''); setSelectedValueField(''); }
+                    }}>
+                      <div className="text-sm font-medium">{ds.name}</div>
+                      <div className="text-xs text-gray-500">{ds.description}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-500">Label Field</label>
+            <select className="mt-1 block w-full border-gray-300 rounded" value={selectedLabelField} onChange={e => setSelectedLabelField(e.target.value)}>
+              <option value="">-- select --</option>
+              {(() => {
+                // build options from sample rows keys
+                const keys = new Set<string>();
+                datasetSampleRows.slice(0,10).forEach(r => { if (r && typeof r === 'object') Object.keys(r).forEach(k => keys.add(k)); });
+                return Array.from(keys).map(k => <option key={k} value={k}>{k}</option>);
+              })()}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-500">Value Field</label>
+            <select className="mt-1 block w-full border-gray-300 rounded" value={selectedValueField} onChange={e => setSelectedValueField(e.target.value)}>
+              <option value="">-- select --</option>
+              {(() => {
+                const keys = new Set<string>();
+                datasetSampleRows.slice(0,10).forEach(r => { if (r && typeof r === 'object') Object.keys(r).forEach(k => keys.add(k)); });
+                return Array.from(keys).map(k => <option key={k} value={k}>{k}</option>);
+              })()}
+            </select>
+          </div>
+
+          <div className="text-sm text-gray-500">Preview (first 5 rows):</div>
+          <div className="max-h-40 overflow-auto bg-white border rounded p-2">
+            {datasetSampleRows.length === 0 && <div className="text-xs text-gray-400">No sample rows available.</div>}
+            {datasetSampleRows.length > 0 && (
+              <table className="w-full text-xs table-auto">
+                <thead>
+                  <tr>{Object.keys(datasetSampleRows[0] || {}).map(k => <th key={k} className="px-1 text-left font-semibold">{k}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {datasetSampleRows.slice(0,5).map((r, idx) => (
+                    <tr key={idx} className="border-t"><td className="px-1">{Object.values(r).map((v:any,i:number)=> <div key={i} className="truncate max-w-xs">{String(v ?? '')}</div>)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="flex justify-end space-x-2">
+            <Button variant="secondary" onClick={() => { setIsDatasetModalOpen(false); setSelectedDatasetId(null); setDatasetSampleRows([]); }}>Cancel</Button>
+            <Button onClick={async () => {
+              if (!dsSelectedForQuestion) return alert('No question selected');
+              if (!selectedDatasetId) return alert('Select a dataset');
+              if (!selectedLabelField || !selectedValueField) return alert('Choose label and value fields');
+              // build options from sample rows
+              try {
+                const res = await fetch(`/api/admin/datasets/${selectedDatasetId}/content?limit=100`);
+                const j = await res.json();
+                const rows = Array.isArray(j.rows) ? j.rows.map((r:any) => (r.dataset_data ? r.dataset_data : r.dataset_data === undefined ? {} : {})) : [];
+                const opts = (rows || []).map((r:any) => ({ label: String(r[selectedLabelField] ?? ''), value: String(r[selectedValueField] ?? '') })).filter(o => o.value !== '');
+                // update the target question's options
+                updateQuestion(dsSelectedForQuestion.pIdx, dsSelectedForQuestion.sIdx, dsSelectedForQuestion.qIdx, { options: opts });
+                setIsDatasetModalOpen(false);
+              } catch (e) { console.error('Failed to build options from dataset', e); alert('Failed to build options from dataset'); }
+            }}>Insert Options</Button>
+          </div>
         </div>
       </Modal>
     </div>

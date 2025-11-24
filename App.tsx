@@ -9,6 +9,7 @@ import ActivityDashboardPage from './pages/ActivityDashboardPage';
 import QuestionFollowupPage from './pages/QuestionFollowupPage';
 import ReportsPage from './pages/ReportsPage';
 import ReportViewPage from './pages/ReportViewPage';
+import ReportBuilderPage from './pages/ReportBuilderPage';
 import UsersPage from './pages/UsersPage';
 import FacilitiesPage from './pages/FacilitiesPage';
 import ProgramsPage from './pages/ProgramsPage';
@@ -47,10 +48,11 @@ const AppRoutes = () => {
       <Route path="/activities" element={<ProtectedRoute><Layout><ActivitiesPage /></Layout></ProtectedRoute>} />
 
       <Route path="/reports" element={<ProtectedRoute><Layout><ReportsPage /></Layout></ProtectedRoute>} />
+      <Route path="/reports/builder" element={<ProtectedRoute><Layout><ReportBuilderPage /></Layout></ProtectedRoute>} />
       <Route path="/reports/:reportId" element={<ProtectedRoute><Layout><ReportViewPage /></Layout></ProtectedRoute>} />
 
       <Route path="/settings" element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
-      <Route path="/docs" element={<ProtectedRoute><Layout><DocsPage /></Layout></ProtectedRoute>} />
+      <Route path="/docs" element={<Layout><DocsPage /></Layout>} />
       <Route path="/profile" element={<ProtectedRoute><Layout><ProfilePage /></Layout></ProtectedRoute>} />
 
       <Route path="/users" element={<ProtectedRoute><Layout><UsersPage /></Layout></ProtectedRoute>} />

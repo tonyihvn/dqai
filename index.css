@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --primary-color: #3b82f6;
+    --sidebar-bg: #ffffff;
+    --nav-text-color: #111827;
+    --logo-color: #111827;
+    --app-text-color: #111827;
+    --app-font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+}
+
+@layer components {
+  .app-sidebar,
+  .app-sidebar-inner {
+    background-color: var(--sidebar-bg, #ffffff) !important;
+    color: var(--nav-text-color, #111827) !important;
+    font-family: var(--app-font-family, Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial) !important;
+  }
+
+  .app-sidebar .pink,
+  .app-sidebar .pink.lighten-1,
+  .app-sidebar .pink.lighten-2,
+  .app-sidebar .red,
+  .app-sidebar .red.lighten-1,
+  .app-sidebar .red.lighten-2 {
+    background-color: transparent !important;
+    color: inherit !important;
+  }
+
+  .app-sidebar a,
+  .app-sidebar .group {
+    background-color: transparent !important;
+    color: inherit !important;
+  }
+
+  .app-sidebar .bg-primary-50 {
+    background-color: var(--sidebar-bg, #ffffff) !important;
+  }
+
+  .app-sidebar .text-primary-600 {
+    color: var(--nav-text-color, #111827) !important;
+  }
+
+  .app-sidebar * {
+    box-shadow: none !important;
+    filter: none !important;
+    background-image: none !important;
+  }
+
+  .btn-primary,
+  .text-primary {
+    background-color: var(--primary-color) !important;
+    color: white !important;
+  }
+
+  header,
+  nav,
+  .nav-wrapper,
+  .navbar,
+  .app-topnav {
+    background-color: var(--navbar-bg, var(--primary-color)) !important;
+    color: var(--nav-text-color, #ffffff) !important;
+  }
+
+  .brand-logo,
+  .app-logo {
+    color: var(--logo-color) !important;
+  }
+
+  header .pink,
+  header .red,
+  nav .pink,
+  nav .red {
+    background-color: var(--navbar-bg, #ffffff) !important;
+    color: var(--nav-text-color, #111827) !important;
+  }
+}
+
+

@@ -2,12 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
+import { apiFetch } from '../utils/api';
 
 const QuestionFollowupPage: React.FC = () => {
   const { activityId } = useParams<{ activityId: string }>();
   const navigate = useNavigate();
   const [questions, setQuestions] = useState<any[]>([]);
   const [answers, setAnswers] = useState<any[]>([]);
+  const [editingMap, setEditingMap] = useState<Record<number, { reviewers_comment?: string; quality_improvement_followup?: string; score?: number }>>({});
   const [loading, setLoading] = useState(true);
   const location = useLocation();
   const params = new URLSearchParams(location.search);
@@ -16,36 +18,46 @@ const QuestionFollowupPage: React.FC = () => {
   useEffect(() => {
     const load = async () => {
       try {
-        const qRes = await fetch(`http://localhost:3000/api/questions?activityId=${activityId}`, { credentials: 'include' });
+        const qRes = await apiFetch(`/api/questions?activityId=${activityId}`, { credentials: 'include' });
         if (qRes.ok) setQuestions(await qRes.json());
 
         // If reportId provided, fetch only answers for that report
         let aRes;
         if (qReportId) {
-          aRes = await fetch(`http://localhost:3000/api/answers?reportId=${qReportId}`, { credentials: 'include' });
+          aRes = await apiFetch(`/api/answers?reportId=${qReportId}`, { credentials: 'include' });
         } else {
-          aRes = await fetch(`http://localhost:3000/api/answers?activityId=${activityId}`, { credentials: 'include' });
+          aRes = await apiFetch(`/api/answers?activityId=${activityId}`, { credentials: 'include' });
         }
-        if (aRes.ok) setAnswers(await aRes.json());
+        if (aRes.ok) {
+          const ans = await aRes.json();
+          setAnswers(ans);
+          // initialize editing map with current values
+          const map: Record<number, any> = {};
+          (ans || []).forEach((a: any) => { map[a.id] = { reviewers_comment: a.reviewers_comment || '', quality_improvement_followup: a.quality_improvement_followup || '', score: a.score ?? null }; });
+          setEditingMap(map);
+        }
       } catch (e) { console.error(e); }
       setLoading(false);
     };
     load();
   }, [activityId]);
 
-  const saveAnswerFollowup = async (answerId: string, payload: { quality_improvement_followup?: string; reviewers_comment?: string; score?: number }) => {
+  const saveAnswerFollowup = async (answerId: number) => {
     try {
-      const res = await fetch(`http://localhost:3000/api/answers/${answerId}`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const current = editingMap[answerId] || {};
+      const payload: any = {
+        reviewers_comment: current.reviewers_comment || null,
+        quality_improvement_followup: current.quality_improvement_followup || null,
+        score: typeof current.score !== 'undefined' ? current.score : null
+      };
+      const res = await apiFetch(`/api/answers/${answerId}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (res.ok) {
         const updated = await res.json();
         setAnswers(prev => prev.map(a => a.id === updated.id ? updated : a));
+        setEditingMap(prev => ({ ...prev, [answerId]: { reviewers_comment: updated.reviewers_comment || '', quality_improvement_followup: updated.quality_improvement_followup || '', score: updated.score ?? null } }));
       } else {
-        alert('Failed to save followup');
+        const txt = await res.text().catch(() => '');
+        alert('Failed to save followup: ' + txt);
       }
     } catch (e) { console.error(e); alert('Failed to save followup'); }
   };
@@ -73,11 +85,21 @@ const QuestionFollowupPage: React.FC = () => {
                 <div key={a.id} className="flex items-start space-x-4">
                   <div className="w-1/3 text-sm text-gray-700">{typeof a.answer_value === 'object' ? JSON.stringify(a.answer_value) : String(a.answer_value)}</div>
                   <div className="w-1/3">
-                    <textarea defaultValue={a.quality_improvement_followup || ''} onBlur={(e) => saveAnswerFollowup(a.id, { quality_improvement_followup: e.target.value })} className="w-full border rounded p-2" rows={2} />
+                    <label className="block text-xs font-medium mb-1">Follow-up</label>
+                    <textarea value={editingMap[a.id]?.quality_improvement_followup || ''} onChange={e => setEditingMap(prev => ({ ...prev, [a.id]: { ...(prev[a.id] || {}), quality_improvement_followup: e.target.value } }))} className="w-full border rounded p-2" rows={2} />
                   </div>
                   <div className="w-1/4">
-                    <input type="text" defaultValue={a.reviewers_comment || ''} onBlur={(e) => saveAnswerFollowup(a.id, { reviewers_comment: e.target.value })} className="w-full border rounded p-2" />
-                    <input type="number" defaultValue={a.score ?? ''} onBlur={(e) => saveAnswerFollowup(a.id, { score: e.target.value ? Number(e.target.value) : null })} className="w-full border rounded p-2 mt-2" placeholder="Score" />
+                    <label className="block text-xs font-medium mb-1">Reviewer Comment</label>
+                    <input type="text" value={editingMap[a.id]?.reviewers_comment || ''} onChange={e => setEditingMap(prev => ({ ...prev, [a.id]: { ...(prev[a.id] || {}), reviewers_comment: e.target.value } }))} className="w-full border rounded p-2" />
+                    <label className="block text-xs font-medium mb-1 mt-2">Score</label>
+                    <input type="number" value={editingMap[a.id]?.score ?? ''} onChange={e => setEditingMap(prev => ({ ...prev, [a.id]: { ...(prev[a.id] || {}), score: e.target.value ? Number(e.target.value) : null } }))} className="w-full border rounded p-2 mt-0" placeholder="Score" />
+                    <div className="mt-2 flex gap-2">
+                      <Button size="sm" onClick={() => saveAnswerFollowup(a.id)}>Save</Button>
+                      <Button size="sm" variant="secondary" onClick={() => {
+                        // revert edits to last saved
+                        setEditingMap(prev => ({ ...prev, [a.id]: { reviewers_comment: a.reviewers_comment || '', quality_improvement_followup: a.quality_improvement_followup || '', score: a.score ?? null } }));
+                      }}>Cancel</Button>
+                    </div>
                   </div>
                 </div>
               ))}

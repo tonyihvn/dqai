@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ChartPieIcon, DocumentPlusIcon, DocumentTextIcon, BuildingOfficeIcon, UserGroupIcon, FolderIcon, ClipboardDocumentListIcon, Cog6ToothIcon, UserIcon } from '@heroicons/react/24/outline';
+import { ChartPieIcon, DocumentPlusIcon, DocumentTextIcon, BuildingOfficeIcon, UserGroupIcon, FolderIcon, ClipboardDocumentListIcon, Cog6ToothIcon, UserIcon, ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
+import { useMockData } from '../../hooks/useMockData';
 import { useTheme } from '../../hooks/useTheme';
 
 const navigation = [
@@ -18,6 +19,8 @@ const Sidebar: React.FC<{ collapsed?: boolean; mobileOpen?: boolean; onClose?: (
   const location = useLocation();
   const sidebarWidthClass = collapsed ? 'md:w-20' : 'md:w-64';
   const { settings } = useTheme();
+  const { activities } = useMockData();
+  const [activitiesOpen, setActivitiesOpen] = React.useState(false);
 
   // Mobile drawer
   const mobileDrawer = mobileOpen ? (
@@ -71,6 +74,35 @@ const Sidebar: React.FC<{ collapsed?: boolean; mobileOpen?: boolean; onClose?: (
           <div className="mt-0 flex-1 flex flex-col">
             <nav className="flex-1 px-2 pb-4 space-y-1">
               {navigation.map((item) => {
+                // Render Activities special case with expandable published activities
+                if (item.name === 'Activities') {
+                  const isActive = location.pathname.startsWith(item.href);
+                  const published = Array.isArray(activities) ? activities.filter(a => String(a.status || '').toLowerCase() === 'published') : [];
+                  return (
+                    <div key={item.name}>
+                      <div onClick={() => setActivitiesOpen(o => !o)} className={`group flex items-center cursor-pointer ${collapsed ? 'justify-center' : ''} px-2 py-2 text-sm font-medium rounded-md ${isActive ? 'bg-primary-50 text-primary-600' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
+                        <item.icon className={`flex-shrink-0 h-6 w-6 ${isActive ? 'text-primary-600' : 'text-gray-400 group-hover:text-gray-500'}`} aria-hidden="true" />
+                        {!collapsed && <span className="ml-3 flex-1">{item.name}</span>}
+                        {!collapsed && <ChevronDownIcon className={`h-5 w-5 transition-transform ${activitiesOpen ? 'transform rotate-180' : ''} text-gray-400`} />}
+                      </div>
+                      {!collapsed && activitiesOpen && (
+                        <div className="pl-8 mt-1 space-y-1">
+                          {published.length === 0 && <div className="text-xs text-gray-400">No published activities</div>}
+                          {published.map(a => (
+                            <Link
+                              key={a.id}
+                              to={`/activities/dashboard/${a.id}`}
+                              className="flex items-center text-xs text-gray-600 hover:bg-primary-50 hover:text-primary-700 px-2 py-1 rounded-md"
+                            >
+                              <ChevronRightIcon className="flex-shrink-0 h-4 w-4 text-gray-400 mr-2" />
+                              <span className="truncate">{a.title || a.name || `Activity ${a.id}`}</span>
+                            </Link>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
                 const isActive = location.pathname.startsWith(item.href);
                 return (
                   <Link

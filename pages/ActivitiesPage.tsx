@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useMockData } from '../hooks/useMockData';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import { confirm, error as swalError, toast as swalToast } from '../components/ui/swal';
 import Modal from '../components/ui/Modal';
 import RichTextEditor from '../components/ui/RichTextEditor';
 import { PlusIcon, PencilIcon, TrashIcon, DocumentTextIcon, PlayIcon } from '@heroicons/react/24/outline';
@@ -17,6 +18,7 @@ const ActivitiesPage: React.FC = () => {
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [embedModalOpen, setEmbedModalOpen] = useState(false);
   const [shareUrl, setShareUrl] = useState<string>('');
+  const [openActionsId, setOpenActionsId] = useState<number | null>(null);
 
   const canEdit = currentUser?.role === 'Admin' || currentUser?.role === 'Form Builder';
   const canCollect = currentUser?.role === 'Admin' || currentUser?.role === 'Data Collector';
@@ -71,7 +73,7 @@ const ActivitiesPage: React.FC = () => {
       } as Activity);
       setIsModalOpen(false);
     } else {
-      alert("Title and Program are required");
+      swalError('Missing fields', 'Title and Program are required');
     }
   };
 
@@ -84,121 +86,82 @@ const ActivitiesPage: React.FC = () => {
         </Button>}
       </div>
 
-      <Card>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Program</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Type</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Dates</th>
-                <th className="relative px-6 py-3"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {visibleActivities.map((activity) => (
-                <tr key={activity.id}>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm font-medium text-gray-900">{activity.title}</div>
-                    <div className="text-sm text-gray-500">{activity.category}</div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getProgramName(activity.programId)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{(activity as any).responseType || (activity as any).response_type || '—'}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${activity.status === 'Published' ? 'bg-green-100 text-green-800' : activity.status === 'Archived' ? 'bg-gray-100 text-gray-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                      {activity.status}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(activity.startDate)} - {formatDate(activity.endDate)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
-                    {canEdit && (
-                      <>
-
-                        {/* Show Edit Form Builder button if form exists, else Build Form */}
-                        {(() => {
-                          const hasForm = Boolean(activity.formDefinition && Array.isArray(activity.formDefinition.pages) && activity.formDefinition.pages.some(p => p.sections && p.sections.some(s => (s.questions || []).length > 0)));
-                          return hasForm ? (
-                            <button
-                              onClick={() => navigate(`/activities/build/${activity.id}`)}
-                              className="text-indigo-600 hover:text-indigo-900"
-                              title="Edit Form"
-                            >
-                              <span className="inline-flex items-center">
-                                <DocumentTextIcon className="h-5 w-5 mr-1" /> Edit Form
-                              </span>
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => navigate(`/activities/build/${activity.id}`)}
-                              className="text-green-600 hover:text-green-900"
-                              title="Build Form"
-                            >
-                              <span className="inline-flex items-center">
-                                <DocumentTextIcon className="h-5 w-5 mr-1" /> Build Form
-                              </span>
-                            </button>
-                          );
-                        })()}
-                        <button onClick={() => navigate(`/activities/dashboard/${activity.id}`)} className="text-blue-600 hover:text-blue-900 ml-2" title="View Collected Form Data">
-                          <DocumentTextIcon className="h-5 w-5" />
-                        </button>
-                        <button onClick={() => openModal(activity)} className="text-yellow-600 hover:text-yellow-900" title="Edit Activity">
-                          <PencilIcon className="h-5 w-5" />
-                        </button>
-                        <button onClick={() => { if (confirm('Delete?')) deleteActivity(activity.id) }} className="text-red-600 hover:text-red-900" title="Delete Activity">
-                          <TrashIcon className="h-5 w-5" />
-                        </button>
-                      </>
-                    )}
-                    {/* Share controls: Copy, QR, Embed - visible to editors and collectors */}
-                    <div className="inline-flex items-center space-x-2">
-                      <button
-                        onClick={() => {
-                          const full = `${window.location.origin}/#/standalone/fill/${activity.id}`;
-                          navigator.clipboard.writeText(full).then(() => alert('Link copied to clipboard'));
-                        }}
-                        className="text-gray-600 hover:text-gray-900"
-                        title="Copy standalone link"
-                      >
-                        Copy
-                      </button>
-                      <button
-                        onClick={() => {
-                          const full = `${window.location.origin}/#/standalone/fill/${activity.id}`;
-                          setShareUrl(full);
-                          setQrModalOpen(true);
-                        }}
-                        className="text-gray-600 hover:text-gray-900"
-                        title="Show QR code"
-                      >
-                        QR
-                      </button>
-                      <button
-                        onClick={() => {
-                          const full = `${window.location.origin}/#/standalone/fill/${activity.id}`;
-                          setShareUrl(full);
-                          setEmbedModalOpen(true);
-                        }}
-                        className="text-gray-600 hover:text-gray-900"
-                        title="Show embed iframe"
-                      >
-                        Embed
-                      </button>
+      <div className="grid gap-4">
+        {visibleActivities.map(activity => (
+          <Card key={activity.id}>
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-lg font-medium text-gray-900">{activity.title}</div>
+                <div className="text-sm text-gray-500">{activity.category} · {getProgramName(activity.programId)}</div>
+                <div className="mt-2 text-sm text-gray-500">{(activity as any).responseType || (activity as any).response_type || '—'} · {formatDate(activity.startDate)} - {formatDate(activity.endDate)}</div>
+              </div>
+              <div className="flex items-start gap-2">
+                <div className="flex flex-col items-end space-y-2">
+                  <div className="flex flex-wrap gap-2">
+                    {canCollect && <Button size="sm" variant="primary" onClick={() => navigate(`/activities/fill/${activity.id}`)} leftIcon={<PlayIcon className="h-4 w-4" />}>Collect</Button>}
+                    {/* Keep Build/Edit visible on very small screens */}
+                    <div className="sm:hidden">
+                      {canEdit && (() => {
+                        const hasForm = Boolean(activity.formDefinition && Array.isArray(activity.formDefinition.pages) && activity.formDefinition.pages.some(p => p.sections && p.sections.some(s => (s.questions || []).length > 0)));
+                        return hasForm ? (
+                          <Button size="sm" variant="secondary" onClick={() => navigate(`/activities/build/${activity.id}`)} leftIcon={<DocumentTextIcon className="h-4 w-4" />}>Edit Form</Button>
+                        ) : (
+                          <Button size="sm" variant="primary" onClick={() => navigate(`/activities/build/${activity.id}`)} leftIcon={<DocumentTextIcon className="h-4 w-4" />}>Build Form</Button>
+                        );
+                      })()}
                     </div>
-                    {canCollect && (
-                      <button onClick={() => navigate(`/activities/fill/${activity.id}`)} className="text-green-600 hover:text-green-900" title="Start Data Collection">
-                        <PlayIcon className="h-5 w-5" />
-                      </button>
+                    <div className="hidden sm:flex sm:flex-wrap sm:gap-2">
+                      {canEdit && (
+                        <>
+                          {(() => {
+                            const hasForm = Boolean(activity.formDefinition && Array.isArray(activity.formDefinition.pages) && activity.formDefinition.pages.some(p => p.sections && p.sections.some(s => (s.questions || []).length > 0)));
+                            return hasForm ? (
+                              <Button size="sm" variant="secondary" onClick={() => navigate(`/activities/build/${activity.id}`)} leftIcon={<DocumentTextIcon className="h-4 w-4" />}>Edit Form</Button>
+                            ) : (
+                              <Button size="sm" variant="primary" onClick={() => navigate(`/activities/build/${activity.id}`)} leftIcon={<DocumentTextIcon className="h-4 w-4" />}>Build Form</Button>
+                            );
+                          })()}
+                          <Button size="sm" variant="secondary" onClick={() => navigate(`/reports/builder?activityId=${activity.id}`)} leftIcon={<DocumentTextIcon className="h-4 w-4" />}>Build Report</Button>
+                          <Button size="sm" variant="secondary" onClick={() => navigate(`/activities/dashboard/${activity.id}`)} leftIcon={<DocumentTextIcon className="h-4 w-4" />}>View Data</Button>
+                          <Button size="sm" variant="secondary" onClick={() => openModal(activity)} leftIcon={<PencilIcon className="h-4 w-4" />}>Edit</Button>
+                          <Button size="sm" variant="danger" onClick={async () => { const ok = await confirm({ title: 'Delete activity?', text: 'This will delete the activity and its data.' }); if (ok) deleteActivity(activity.id); }} leftIcon={<TrashIcon className="h-4 w-4" />}>Delete</Button>
+                          <div className="inline-flex items-center space-x-2">
+                            <Button size="sm" variant="secondary" onClick={() => { const full = `${window.location.origin}/#/standalone/fill/${activity.id}`; navigator.clipboard.writeText(full).then(() => swalToast('Link copied to clipboard', 'success')); }}>Copy Link</Button>
+                            <Button size="sm" variant="secondary" onClick={() => { const full = `${window.location.origin}/#/standalone/fill/${activity.id}`; setShareUrl(full); setQrModalOpen(true); }}>QR Code</Button>
+                            <Button size="sm" variant="secondary" onClick={() => { const full = `${window.location.origin}/#/standalone/fill/${activity.id}`; setShareUrl(full); setEmbedModalOpen(true); }}>Embed</Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* mobile overflow */}
+                  <div className="sm:hidden relative">
+                    <button onClick={() => setOpenActionsId(openActionsId === activity.id ? null : activity.id)} className="px-2 py-1 border rounded">⋯</button>
+                    {openActionsId === activity.id && (
+                      <div className="absolute right-0 mt-2 w-48 bg-white border rounded shadow p-2" style={{ zIndex: 9999 }}>
+                        {canEdit && (
+                          <>
+                            <div className="text-sm"><button className="w-full text-left p-2" onClick={() => navigate(`/activities/build/${activity.id}`)}>Build/Edit Form</button></div>
+                            <div className="text-sm"><button className="w-full text-left p-2" onClick={() => navigate(`/reports/builder?activityId=${activity.id}`)}>Build Report</button></div>
+                            <div className="text-sm"><button className="w-full text-left p-2" onClick={() => navigate(`/activities/dashboard/${activity.id}`)}>View Data</button></div>
+                            <div className="text-sm"><button className="w-full text-left p-2" onClick={() => { openModal(activity); setOpenActionsId(null); }}>Edit Activity</button></div>
+                            <div className="text-sm"><button className="w-full text-left p-2 text-red-600" onClick={async () => { const ok = await confirm({ title: 'Delete activity?', text: 'This will delete the activity and its data.' }); if (ok) deleteActivity(activity.id); setOpenActionsId(null); }}>Delete</button></div>
+                            <div className="border-t my-1"></div>
+                          </>
+                        )}
+                        <div className="text-sm"><button className="w-full text-left p-2" onClick={() => { const full = `${window.location.origin}/#/standalone/fill/${activity.id}`; navigator.clipboard.writeText(full); setOpenActionsId(null); swalToast('Link copied to clipboard', 'success'); }}>Copy Link</button></div>
+                        <div className="text-sm"><button className="w-full text-left p-2" onClick={() => { const full = `${window.location.origin}/#/standalone/fill/${activity.id}`; setShareUrl(full); setQrModalOpen(true); setOpenActionsId(null); }}>QR Code</button></div>
+                        <div className="text-sm"><button className="w-full text-left p-2" onClick={() => { const full = `${window.location.origin}/#/standalone/fill/${activity.id}`; setShareUrl(full); setEmbedModalOpen(true); setOpenActionsId(null); }}>Embed</button></div>
+                      </div>
                     )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
 
       {/* QR Modal */}
       <Modal isOpen={qrModalOpen} onClose={() => setQrModalOpen(false)} title="QR Code">
@@ -209,7 +172,7 @@ const ActivitiesPage: React.FC = () => {
             <p>No URL</p>
           )}
           <div className="mt-4">
-            <button onClick={() => { navigator.clipboard.writeText(shareUrl); alert('Link copied to clipboard'); }} className="px-3 py-2 bg-gray-100 rounded">Copy Link</button>
+            <button onClick={() => { navigator.clipboard.writeText(shareUrl); swalToast('Link copied to clipboard', 'success'); }} className="px-3 py-2 bg-gray-100 rounded">Copy Link</button>
             <a className="ml-3 px-3 py-2 bg-blue-600 text-white rounded" href={shareUrl} target="_blank" rel="noreferrer">Open Link</a>
           </div>
         </div>
@@ -220,8 +183,8 @@ const ActivitiesPage: React.FC = () => {
         <div>
           <p className="text-sm text-gray-600">Copy the iframe snippet below and paste into your site. The snippet is shown as text and will not execute here.</p>
           <pre className="mt-3 p-3 bg-gray-100 rounded text-sm overflow-auto">{`<iframe src="${shareUrl}" width="800" height="900"></iframe>`}</pre>
-          <div className="mt-3">
-            <button onClick={() => { navigator.clipboard.writeText(`<iframe src="${shareUrl}" width="800" height="900"></iframe>`); alert('Embed snippet copied'); }} className="px-3 py-2 bg-gray-100 rounded">Copy Snippet</button>
+            <div className="mt-3">
+            <button onClick={() => { navigator.clipboard.writeText(`<iframe src="${shareUrl}" width="800" height="900"></iframe>`); swalToast('Embed snippet copied', 'success'); }} className="px-3 py-2 bg-gray-100 rounded">Copy Snippet</button>
             <a className="ml-3 px-3 py-2 bg-blue-600 text-white rounded" href={shareUrl} target="_blank" rel="noreferrer">Open Link</a>
           </div>
         </div>

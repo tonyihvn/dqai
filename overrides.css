@@ -50,6 +50,12 @@
     --app-font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
 }
 
+/* Ensure inputs and editor content default to left-to-right to avoid accidental RTL rendering */
+input, textarea, select, .canvas-editor, .tox, .tox-editor-container, .tox .tox-edit-area, .tox .tox-edit-area iframe {
+    direction: ltr !important;
+    text-align: left !important;
+}
+
 /* Example usage: buttons and links can use --primary-color */
 .btn-primary,
 .text-primary {

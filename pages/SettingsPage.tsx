@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import DatasetsPage from './DatasetsPage';
 import { useTheme } from '../hooks/useTheme';
 import { appRoutes } from '../appRoutes';
 
@@ -433,7 +434,7 @@ const PermissionsList: React.FC = () => {
 
 const SettingsPage: React.FC = () => {
     const { settings, setSettings, reset } = useTheme();
-    const [tab, setTab] = useState<'database' | 'llm' | 'rag' | 'theme' | 'app' | 'permissions'>('theme');
+    const [tab, setTab] = useState<'database' | 'llm' | 'rag' | 'theme' | 'app' | 'permissions' | 'datasets'>('theme');
     const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const f = e.target.files?.[0];
         if (!f) return;
@@ -513,6 +514,7 @@ const SettingsPage: React.FC = () => {
                     <button onClick={() => setTab('rag')} className={`px-3 py-2 rounded ${tab === 'rag' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>RAG</button>
                     <button onClick={() => setTab('theme')} className={`px-3 py-2 rounded ${tab === 'theme' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Theme</button>
                     <button onClick={() => setTab('app')} className={`px-3 py-2 rounded ${tab === 'app' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>App</button>
+                    <button onClick={() => setTab('datasets')} className={`px-3 py-2 rounded ${tab === 'datasets' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Datasets</button>
                     <button onClick={() => setTab('permissions')} className={`px-3 py-2 rounded ${tab === 'permissions' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Roles & Permissions</button>
                 </nav>
             </div>
@@ -728,6 +730,13 @@ const SettingsPage: React.FC = () => {
                             </select>
                         </div>
                     </div>
+                </Card>
+            )}
+
+            {tab === 'datasets' && (
+                <Card>
+                    <h3 className="text-lg font-medium mb-2">Datasets</h3>
+                    <DatasetsPage />
                 </Card>
             )}
 

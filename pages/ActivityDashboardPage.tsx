@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import DataTable from '../components/ui/DataTable';
+import { confirm, error as swalError, success as swalSuccess } from '../components/ui/swal';
 import { Bar, Pie, Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -31,18 +32,34 @@ const ActivityDashboardPage: React.FC = () => {
   const [fileSearch, setFileSearch] = useState('');
   const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>([]);
   const [chartTypes, setChartTypes] = useState<Record<string, string>>({});
+  const [powerbiModalOpen, setPowerbiModalOpen] = useState(false);
+  const [powerbiInput, setPowerbiInput] = useState('');
+  const [powerbiLinkType, setPowerbiLinkType] = useState<string | null>(null);
+  const [powerbiMode, setPowerbiMode] = useState<string | null>(null);
+  const [powerbiSaving, setPowerbiSaving] = useState(false);
 
   useEffect(() => {
     const fetchDashboard = async () => {
       try {
-        const res = await fetch(`http://localhost:3000/api/activity_dashboard/${activityId}`, { credentials: 'include' });
+        const res = await fetch(`/api/activity_dashboard/${activityId}`, { credentials: 'include' });
         if (res.ok) {
           const json = await res.json();
           setData(json);
           // start with no questions selected so charts don't render until user checks them
           setSelectedQuestionIds([]);
         } else {
-          console.error('Failed to load dashboard', await res.text());
+          // If the dashboard endpoint isn't available, try fetching the activity as a fallback
+          const txt = await res.text();
+          console.error('Failed to load dashboard', txt);
+          if (res.status === 404) {
+            try {
+              const aRes = await fetch(`/api/activities/${activityId}`, { credentials: 'include' });
+              if (aRes.ok) {
+                const a = await aRes.json();
+                setData({ activity: a, questions: [], reports: [], answers: [], answersByQuestion: {}, uploadedDocs: [] });
+              }
+            } catch (e) { /* ignore */ }
+          }
         }
       } catch (e) { console.error(e); }
       setLoading(false);
@@ -53,8 +70,8 @@ const ActivityDashboardPage: React.FC = () => {
     (async () => {
       try {
         const [uRes, fRes] = await Promise.all([
-          fetch('http://localhost:3000/api/users', { credentials: 'include' }),
-          fetch('http://localhost:3000/api/facilities', { credentials: 'include' })
+          fetch('/api/users', { credentials: 'include' }),
+          fetch('/api/facilities', { credentials: 'include' })
         ]);
         if (uRes.ok) {
           const users = await uRes.json();
@@ -104,6 +121,8 @@ const ActivityDashboardPage: React.FC = () => {
         </div>
         <div className="space-x-2">
           <Button onClick={() => navigate('/activities')} variant="secondary">Back</Button>
+          <Button onClick={() => navigate(`/activities/fill/${activity.id}`)} variant="primary">New +</Button>
+          <Button onClick={() => navigate(`/reports/builder?activityId=${activity.id}`)} variant="secondary">Build Report</Button>
           <Button onClick={handleDownloadPdf}>Download PDF</Button>
         </div>
       </div>
@@ -111,10 +130,90 @@ const ActivityDashboardPage: React.FC = () => {
       <Card>
         <h2 className="text-lg font-semibold mb-2">Power BI</h2>
         <p className="text-sm text-gray-500">Embed your Power BI report here (iframe) or connect external dashboard.</p>
-        <div className="mt-4">
-          <iframe title="PowerBI" src={activity.powerbi_url || ''} style={{ width: '100%', height: 300, border: 'none' }} />
+          <div className="mt-4">
+            <div className="flex items-center justify-end mb-2">
+            <Button variant="secondary" size="sm" onClick={() => { setPowerbiInput(activity.powerbi_url || ''); setPowerbiLinkType(activity.powerbi_link_type || null); setPowerbiMode(activity.powerbi_mode || null); setPowerbiModalOpen(true); }}>Configure Power BI</Button>
+          </div>
+          {(() => {
+            const extractUrlFromIframe = (maybeIframe: any) => {
+              if (!maybeIframe) return null;
+              if (typeof maybeIframe !== 'string') return String(maybeIframe);
+              const s = maybeIframe.trim();
+              if (s.startsWith('<iframe') || /<iframe/i.test(s)) {
+                const m = s.match(/src\s*=\s*"([^"]+)"/) || s.match(/src\s*=\s*'([^']+)'/) || s.match(/src\s*=\s*([^\s>]+)/);
+                if (m && m[1]) return m[1];
+              }
+              return s;
+            };
+            const raw = activity.powerbi_url;
+            const url = extractUrlFromIframe(raw);
+            if (!url || !/^https?:\/\//i.test(url)) {
+              return <div className="text-sm text-red-500">No valid Power BI embed URL saved for this activity.</div>;
+            }
+            return <iframe title="PowerBI" src={url} style={{ width: '100%', height: 300, border: 'none' }} />;
+          })()}
         </div>
       </Card>
+
+      {/* Power BI Modal */}
+      {powerbiModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+          <div className="bg-white w-11/12 max-w-2xl p-6 rounded shadow-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Configure Power BI for this activity</h3>
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => setPowerbiModalOpen(false)}>Close</Button>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="text-sm text-gray-600">Paste an iframe snippet or the direct iframe <code>src</code> URL below.</div>
+              <textarea className="w-full border rounded p-2 text-sm" rows={4} value={powerbiInput} onChange={e => setPowerbiInput(e.target.value)} />
+              <div className="grid grid-cols-2 gap-2">
+                <select className="border p-2 rounded" value={powerbiLinkType || ''} onChange={e => setPowerbiLinkType(e.target.value || null)}>
+                  <option value="">(Select type)</option>
+                  <option value="embed">Embed</option>
+                  <option value="iframe">Iframe</option>
+                  <option value="link">Link</option>
+                </select>
+                <select className="border p-2 rounded" value={powerbiMode || 'disabled'} onChange={e => setPowerbiMode(e.target.value || null)}>
+                  <option value="disabled">Disabled</option>
+                  <option value="enabled">Enabled</option>
+                </select>
+              </div>
+              <div className="text-xs text-gray-500">Example: &lt;iframe src=\"https://app.powerbi.com/....\" width=\"..\" height=\"..\"&gt;&lt;/iframe&gt;</div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="secondary" onClick={() => { setPowerbiModalOpen(false); }}>Cancel</Button>
+              <Button size="sm" variant="primary" onClick={async () => {
+                // sanitize and extract src
+                const s = (powerbiInput || '').trim();
+                const extract = (v: string) => {
+                  if (!v) return null;
+                  const t = v.trim();
+                  if (t.startsWith('<iframe') || /<iframe/i.test(t)) {
+                    const m = t.match(/src\s*=\s*"([^"]+)"/) || t.match(/src\s*=\s*'([^']+)'/) || t.match(/src\s*=\s*([^\s>]+)/);
+                    if (m && m[1]) return m[1];
+                  }
+                  return t;
+                };
+                const url = extract(s);
+                if (!url || !/^https?:\/\//i.test(url)) { swalError('Invalid URL', 'Please provide a valid http/https Power BI embed URL or iframe.'); return; }
+                try {
+                  setPowerbiSaving(true);
+                  const res = await fetch(`/api/admin/activities/${activity.id}/powerbi`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ powerbi_link: url, powerbi_url: url, link_type: powerbiLinkType || null, mode: powerbiMode || null }) });
+                    if (!res.ok) { const txt = await res.text().catch(() => ''); swalError('Save failed', txt || 'Unable to save Power BI configuration'); setPowerbiSaving(false); return; }
+                  // refresh dashboard
+                  const r = await fetch(`/api/activity_dashboard/${activityId}`, { credentials: 'include' });
+                  if (r.ok) setData(await r.json());
+                  setPowerbiModalOpen(false);
+                  swalSuccess('Saved', 'Power BI configuration saved');
+                } catch (e) { console.error(e); swalError('Save failed', 'Unable to save Power BI configuration'); }
+                finally { setPowerbiSaving(false); }
+              }}>Save</Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Card>
         <h2 className="text-lg font-semibold mb-2">Interactive Charts</h2>
@@ -214,6 +313,26 @@ const ActivityDashboardPage: React.FC = () => {
             { key: 'user_id', label: 'User' },
             { key: 'status', label: 'Status' },
             { key: 'reviewers_report', label: "Reviewer's Report" },
+            { key: 'actions', label: 'Actions', render: (row: any) => (
+                <div className="flex gap-2">
+                  <Button size="sm" variant="secondary" onClick={() => navigate(`/reports/${row.__raw.id}`)}>View</Button>
+                  <Button size="sm" variant="secondary" onClick={() => navigate(`/reports/builder?reportId=${row.__raw.id}`)}>Edit</Button>
+                  <Button size="sm" variant="danger" onClick={async () => {
+                    const ok = await confirm({ title: 'Delete report?', text: `Permanently delete report ${row.id}?` });
+                    if (!ok) return;
+                    try {
+                      const resp = await fetch(`/api/reports/${row.__raw.id}`, { method: 'DELETE', credentials: 'include' });
+                      if (resp.ok) {
+                        const r = await fetch(`/api/activity_dashboard/${activityId}`, { credentials: 'include' });
+                        if (r.ok) setData(await r.json());
+                        swalSuccess('Deleted', 'Report deleted');
+                      } else {
+                        const txt = await resp.text().catch(() => ''); swalError('Delete failed', txt || 'Unable to delete report');
+                      }
+                    } catch (e) { console.error(e); swalError('Delete failed', 'Unable to delete report'); }
+                  }}>Delete</Button>
+                </div>
+              ) },
           ];
           const data = reports.map((r: any) => ({
             id: r.id,
@@ -222,6 +341,7 @@ const ActivityDashboardPage: React.FC = () => {
             user_id: (r.user_id ? (usersMap[String(r.user_id)] || r.user_id) : '—'),
             status: r.status || '—',
             reviewers_report: stripHtml(r.reviewers_report),
+            __raw: r,
           }));
           return <DataTable columns={columns} data={data} onCellEdit={undefined} />;
         })()}
@@ -260,17 +380,22 @@ const ActivityDashboardPage: React.FC = () => {
                   setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(url); }, 100);
                 }}>Download</Button>
                 <Button size="sm" variant="secondary" onClick={async () => {
-                  if (!confirm('Delete this uploaded file?')) return;
+                    const ok = await confirm({ title: 'Delete uploaded file?', text: 'This will permanently remove the uploaded file.' });
+                  if (!ok) return;
                   try {
-                    const res = await fetch(`http://localhost:3000/api/uploaded_docs/${d.id}`, { method: 'DELETE', credentials: 'include' });
-                    if (res.ok) {
-                      // refresh dashboard data
-                      const r = await fetch(`http://localhost:3000/api/activity_dashboard/${activityId}`, { credentials: 'include' });
-                      if (r.ok) setData(await r.json());
-                    } else {
-                      alert('Delete failed');
-                    }
-                  } catch (e) { console.error(e); alert('Delete failed'); }
+                      const res = await fetch(`/api/uploaded_docs/${d.id}`, { method: 'DELETE', credentials: 'include' });
+                      if (res.ok) {
+                        // refresh dashboard data
+                        const r = await fetch(`/api/activity_dashboard/${activityId}`, { credentials: 'include' });
+                        if (r.ok) {
+                          setData(await r.json());
+                          swalSuccess('Deleted', 'Uploaded file deleted');
+                        }
+                      } else {
+                        const txt = await res.text().catch(() => '');
+                        swalError('Delete failed', txt || 'Unable to delete the uploaded file');
+                      }
+                  } catch (e) { console.error(e); swalError('Delete failed', 'Unable to delete the uploaded file'); }
                 }}>Delete</Button>
               </div>
             </div>

@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect, createElement, ReactNode, FC } from 'react';
 import { addAuditEvent, flushAudit } from './useAudit';
+import { error as swalError, toast as swalToast } from '../components/ui/swal';
 import { Program, Activity, Facility, User, ActivityReport, FormDefinition } from '../types';
 
 // Context Definition
@@ -128,7 +129,7 @@ export const DataProvider: FC<{ children: ReactNode }> = ({ children }) => {
                 setUsers([]);
                 setReports([]);
                 setCurrentUser(null);
-                alert('Unable to reach backend API. Please ensure the server is running and .env is configured.');
+                try { swalError('Backend unreachable', 'Please ensure the server is running and .env is configured.'); } catch (e) { }
             }
         };
         fetchData();
@@ -151,11 +152,11 @@ export const DataProvider: FC<{ children: ReactNode }> = ({ children }) => {
                 window.location.href = '#/dashboard';
             } else {
                 const txt = await res.text();
-                alert("Login failed: " + txt);
+                try { swalError('Login failed', String(txt || 'Invalid credentials')); } catch (e) { }
             }
         } catch (e) {
             console.error(e);
-            alert("Login failed. Backend unreachable.");
+            try { swalError('Login failed', 'Backend unreachable'); } catch (er) { }
         }
     };
 
@@ -237,9 +238,9 @@ export const DataProvider: FC<{ children: ReactNode }> = ({ children }) => {
                     });
                 } else {
                     console.error('Failed to save user', await res.text());
-                    alert('Failed to save user');
+                    try { swalError('Save failed', 'Failed to save user'); } catch (er) { }
                 }
-            } catch (e) { console.error(e); alert('Failed to save user'); }
+            } catch (e) { console.error(e); try { swalError('Save failed', 'Failed to save user'); } catch (er) { } }
         })();
     };
     const deleteUser = (id: string) => setUsers(users.filter(u => String(u.id) !== String(id)));
@@ -273,7 +274,31 @@ export const DataProvider: FC<{ children: ReactNode }> = ({ children }) => {
     };
 
     // Report CRUD
-    const saveReport = (report: ActivityReport) => handleSave(`${API_URL}/reports`, report, setReports);
+    const saveReport = async (report: ActivityReport) => {
+        try {
+            // If report exists locally (was loaded from server), use PUT to update
+            const existsOnClient = reports.some(r => String(r.id) === String(report.id));
+            if (report.id && existsOnClient) {
+                const res = await fetch(`${API_URL}/reports/${report.id}`, {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(report)
+                });
+                if (res.ok) {
+                    const saved = await res.json();
+                    setReports(prev => prev.map(p => String(p.id) === String(saved.id) ? saved : p));
+                    try { addAuditEvent({ type: 'crud', action: 'update', resource: `${API_URL}/reports`, id: saved.id, userId: currentUser?.id || null }); await flushAudit(currentUser?.id); } catch (e) { /* ignore */ }
+                    return;
+                } else {
+                    console.error('Failed to update report', await res.text());
+                    return;
+                }
+            }
+            // Otherwise POST to create
+            await handleSave(`${API_URL}/reports`, report, setReports);
+        } catch (e) { console.error('saveReport error', e); }
+    };
 
     const value = {
         currentUser, login, logout,

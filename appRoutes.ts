@@ -10,6 +10,7 @@ export const appRoutes: { path: string; label?: string }[] = [
     { path: '/activities/:activityId/followups', label: 'Question Followups' },
     { path: '/activities', label: 'Activities' },
     { path: '/reports', label: 'Reports' },
+    { path: '/reports/builder', label: 'Report Builder' },
     { path: '/reports/:reportId', label: 'Report View' },
     { path: '/settings', label: 'Settings' },
     { path: '/docs', label: 'Docs' },

@@ -58,6 +58,7 @@ const ReportsPage: React.FC = () => {
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Activity</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submitted By</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Files</th>
                 <th className="relative px-6 py-3"><span className="sr-only">View</span></th>
@@ -71,12 +72,42 @@ const ReportsPage: React.FC = () => {
                     <div className="text-xs text-gray-500">{report.id}</div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getUserName(report.userId)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(report.submissionDate).toLocaleDateString()}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{report.status || 'N/A'}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{report.submissionDate ? new Date(report.submissionDate).toLocaleDateString() : 'N/A'}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{report.uploadedFiles?.length || 0} Files</td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex flex-col gap-1 items-end">
-                    <button className="text-primary-600 hover:text-primary-900 flex items-center" onClick={() => navigate(`/reports/${report.id}`)}>
-                      <EyeIcon className="h-5 w-5 mr-1" /> View
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button className="text-primary-600 hover:text-primary-900 flex items-center" onClick={() => navigate(`/reports/${report.id}`)}>
+                        <EyeIcon className="h-5 w-5 mr-1" /> View
+                      </button>
+                      <button className="text-green-600 hover:text-green-900 flex items-center text-xs" onClick={async () => {
+                        try {
+                          const r = await fetch(`/api/reports/${report.id}/pdf`);
+                          if (!r.ok) {
+                            const txt = await r.text().catch(() => '');
+                            alert('Failed to get PDF: ' + txt);
+                            return;
+                          }
+                          const ct = r.headers.get('content-type') || '';
+                          if (ct.includes('application/pdf')) {
+                            const blob = await r.blob();
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `report-${report.id}.pdf`;
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+                          } else {
+                            // fallback: open html
+                            const text = await r.text();
+                            const w = window.open('', '_blank');
+                            if (w) { w.document.write(text); w.document.close(); }
+                          }
+                        } catch (e) { console.error(e); alert('Failed to download PDF'); }
+                      }}>Download PDF</button>
+                    </div>
                     <button className="text-blue-600 hover:text-blue-900 flex items-center text-xs" onClick={() => {
                       // Find activity to get responseType
                       const activity = activities.find(a => a.id === report.activityId);
