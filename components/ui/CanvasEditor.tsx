@@ -39,6 +39,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
   const convertedElementsRef = useRef<WeakSet<HTMLElement>>(new WeakSet());
   const selectedBlockIdRef = useRef<string | null>(selectedBlockId);
   const selectedPlaceholderRef = useRef<HTMLElement | null>(selectedPlaceholder);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; target: 'block' | 'placeholder' | null; id?: string } | null>(null);
 
   useEffect(() => { selectedBlockIdRef.current = selectedBlockId; }, [selectedBlockId]);
   useEffect(() => { selectedPlaceholderRef.current = selectedPlaceholder; }, [selectedPlaceholder]);
@@ -52,6 +53,9 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
       const clone = containerRef.current.cloneNode(true) as HTMLElement;
       const blocks = Array.from(clone.querySelectorAll('.tpl-block'));
       for (const b of blocks) b.remove();
+      // Remove editor guide lines (red grid lines) so they don't appear in exported report
+      const guideLines = Array.from(clone.querySelectorAll('.editor-guide-line'));
+      for (const g of guideLines) g.remove();
       return clone.innerHTML;
     } catch (e) { return internalHtml || ''; }
   };
@@ -184,7 +188,9 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
 
     // expose a method to get the latest combined HTML (flush current edits)
     getCombinedHtml: () => {
-      const containerHtml = containerRef.current ? containerRef.current.innerHTML : internalHtml || '';
+      // Use the cleaner export routine to avoid including editor-only guide lines
+      // and other interactive helpers that should not appear in final output.
+      const containerHtml = getEditableHtmlFromDom() || internalHtml || '';
       let combined = containerHtml || '';
       for (const b of blocksRef.current) {
         try {
@@ -336,16 +342,24 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           // If we made a local change very recently, prefer local state — ignore incoming parent data for a short window
           try {
             if (Date.now() < (localChangeLockRef.current || 0)) {
-              try { console.debug('[CanvasEditor] ignoring incoming initialBlocks due to recent local change'); } catch (e) { }
+              try { console.debug('[CanvasEditor] ignoring incoming initialBlocks due to recent local change', { now: Date.now(), lock: localChangeLockRef.current }); } catch (e) { }
               // do not update prevInitialBlocksRef so that future parent updates can be considered
               return;
             }
           } catch (e) { }
-          try { console.debug('[CanvasEditor] initialBlocks changed; updating from prop', initialBlocks.length, 'prev:', prevInitialBlocksRef.current.length); } catch (e) { }
-          // IMPORTANT: Only accept new initialBlocks if the incoming length is >= current blocks
-          // This prevents overwriting locally inserted blocks with stale parent state.
-          // If parent sends fewer blocks than we have, keep our blocks (they're more recent).
-          if (initialBlocks.length >= (blocks.length || 0)) {
+          try { console.debug('[CanvasEditor] initialBlocks changed; updating from prop', initialBlocks.length, 'prev:', prevInitialBlocksRef.current.length, 'current:', blocks.length); } catch (e) { }
+
+          // Accept incoming initialBlocks if they're different from what we previously received
+          // This allows us to accept both additions AND deletions from parent
+          const prevIds = new Set((prevInitialBlocksRef.current || []).map((b: any) => String(b?.id || '')));
+          const incomingIds = new Set((initialBlocks || []).map((b: any) => String(b?.id || '')));
+          const idsChanged = prevIds.size !== incomingIds.size ||
+            Array.from(prevIds).some((id: string) => !incomingIds.has(id)) ||
+            Array.from(incomingIds).some((id: string) => !prevIds.has(id));
+
+          // If the IDs are different, we should accept the incoming blocks (could be additions or deletions)
+          if (idsChanged) {
+            try { console.debug('[CanvasEditor] block IDs changed; accepting incoming initialBlocks', { was: Array.from(prevIds).slice(0, 3), now: Array.from(incomingIds).slice(0, 3) }); } catch (e) { }
             prevInitialBlocksRef.current = initialBlocks;
             setBlocks((initialBlocks || []).map((b: any) => ({ ...b })));
             if (value) setInternalHtml(value);
@@ -566,6 +580,21 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
       propsOnSelect && propsOnSelect(null);
     };
 
+    // Right-click context menu handler
+    const handleContextMenu = (ev: MouseEvent) => {
+      ev.preventDefault();
+      const target = ev.target as HTMLElement | null;
+      if (!target) return;
+      const placeholder = target.closest && (target.closest('.tpl-placeholder') as HTMLElement | null);
+      const blockEl = target.closest && (target.closest('.tpl-block') as HTMLElement | null);
+      if (placeholder) {
+        setContextMenu({ x: ev.clientX, y: ev.clientY, target: 'placeholder' });
+      } else if (blockEl) {
+        const bid = blockEl.getAttribute('data-block-id');
+        if (bid) setContextMenu({ x: ev.clientX, y: ev.clientY, target: 'block', id: bid });
+      }
+    };
+
     // Convert placeholders/images to blocks only after movement threshold to avoid duplicates on click
     const potentialDrag = { target: null as HTMLElement | null, startX: 0, startY: 0, moved: false };
     let watching = false;
@@ -609,6 +638,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
 
     el.addEventListener('click', handler);
     el.addEventListener('mousedown', onPointerDown);
+    el.addEventListener('contextmenu', handleContextMenu);
     // allow dragover/drop feedback on the paper-root when using Fabric
     const paperRoot = containerRef.current ? (containerRef.current.closest('.paper-root') as HTMLElement | null) : null;
     let dropIndicator: HTMLDivElement | null = null;
@@ -627,6 +657,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
     return () => {
       el.removeEventListener('click', handler);
       el.removeEventListener('mousedown', onPointerDown);
+      el.removeEventListener('contextmenu', handleContextMenu);
       el.removeEventListener('focusout', onFocusOut as any);
       document.removeEventListener('keydown', onKeyDown);
       if (paperRoot && dropIndicator) try { paperRoot.removeChild(dropIndicator); } catch (e) { }
@@ -679,10 +710,27 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
             }
             // Refresh internalHtml to reflect removals
             setInternalHtml(getEditableHtmlFromDom());
+            // Also remove any existing positioned blocks using the same source to avoid duplicate positioned blocks
+            try {
+              setBlocks(prev => {
+                return prev.filter(b => !(String(b.html || '').includes(String(src))));
+              });
+            } catch (e) { /* ignore */ }
           } catch (e) { /* ignore remove issues */ }
         }
       }
     } catch (e) { /* ignore parse/remove errors */ }
+    // Ensure we don't keep other blocks with the same image src (prevent duplicate-sized copies)
+    try {
+      const parser2 = new DOMParser();
+      const doc2 = parser2.parseFromString(wrappedHtml || '', 'text/html');
+      const img2 = doc2.querySelector('img');
+      if (img2 && img2.getAttribute('src')) {
+        const src2 = img2.getAttribute('src') || '';
+        setBlocks(prev => prev.filter(b => !(String(b.html || '').includes(String(src2)))));
+      }
+    } catch (e) { /* ignore */ }
+
     setBlocks(prev => { const next = [...prev, b]; return next; });
     // lock out incoming stale updates for a short while
     localChangeLockRef.current = Date.now() + 800;
@@ -762,7 +810,21 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           newW = Math.max(10, Math.round(origW - dx)); newLeft = Math.max(0, Math.round(origLeft + dx));
           newH = Math.max(10, Math.round(origH + dy));
         }
-        copy[idx] = { ...copy[idx], left: newLeft, top: newTop, width: newW, height: newH, _localUpdatedAt: Date.now() };
+        // If the block contains an image, ensure it scales within the block by adding width/height:100% to the img style.
+        let newHtml = copy[idx].html || '';
+        try {
+          if (/<img[^>]*>/i.test(newHtml)) {
+            newHtml = newHtml.replace(/<img([^>]*)>/i, (m, attrs) => {
+              // if style attribute exists, append width/height; otherwise add a style attr
+              if (/style=\s*['\"]/.test(attrs)) {
+                return `<img${attrs.replace(/style=(['\"])([^'\"]*)(['\"])/i, (mm, q, st) => `style=${q}${st};width:100%;height:100%${q}`)}>`;
+              }
+              return `<img${attrs} style="width:100%;height:100%">`;
+            });
+          }
+        } catch (e) { /* ignore html updates */ }
+
+        copy[idx] = { ...copy[idx], left: newLeft, top: newTop, width: newW, height: newH, html: newHtml, _localUpdatedAt: Date.now() };
         return copy;
       });
     };
@@ -851,6 +913,16 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         }
       } catch (e) { }
       const id = `b_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      // If there is an image source in the HTML, remove other blocks that reference the same src before creating the new block
+      try {
+        const parser3 = new DOMParser();
+        const doc3 = parser3.parseFromString(html || '', 'text/html');
+        const img3 = doc3.querySelector('img');
+        if (img3 && img3.getAttribute('src')) {
+          const src3 = img3.getAttribute('src') || '';
+          setBlocks(prev => prev.filter(b => !(String(b.html || '').includes(String(src3)))));
+        }
+      } catch (e) { /* ignore */ }
       const newBlock = { id, html, left, top, width: w, height: h, meta: {}, _localUpdatedAt: Date.now() };
       setBlocks(prev => {
         const next = [...prev, newBlock];
@@ -939,7 +1011,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
             <div className="grid grid-cols-3 gap-2">
               <button title="Text" className="p-2 border rounded flex items-center justify-center" onClick={handleInsertTextBlock} aria-label="Insert text"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h16" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M10 6v12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg></button>
               <button title="Block" className="p-2 border rounded flex items-center justify-center" onClick={handleInsertBlock} aria-label="Insert block"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" stroke="currentColor" strokeWidth="1.4" /></svg></button>
-              <button title="Placeholder" className="p-2 border rounded flex items-center justify-center" onClick={handleInsertPlaceholder} aria-label="Insert placeholder"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 5v14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.2" /></svg></button>
+              {/* Placeholder insertion removed — drag questions from the panel instead */}
               <button title="Image" className="p-2 border rounded flex items-center justify-center" onClick={handleInsertImageUrl} aria-label="Insert image"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" strokeWidth="1.4" /><circle cx="8.5" cy="9.5" r="1.5" stroke="currentColor" strokeWidth="1.2" /><path d="M21 19l-6-6-4 4-3-3-4 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
               <button title="Rectangle" className="p-2 border rounded flex items-center justify-center" onClick={() => (ref as any)?.current?.insertShape?.('rect', { width: 140, height: 80 })} aria-label="Insert rectangle"><svg width="16" height="12" viewBox="0 0 24 16" fill="none"><rect x="3" y="2" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="1.2" /></svg></button>
               <button title="Circle" className="p-2 border rounded flex items-center justify-center" onClick={() => (ref as any)?.current?.insertShape?.('circle', { width: 90, height: 90 })} aria-label="Insert circle"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="1.2" /></svg></button>
@@ -1051,12 +1123,12 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
               }}
             >
               <div dangerouslySetInnerHTML={{ __html: internalHtml }} />
-              {/* center red guide lines (vertical + horizontal) */}
-              <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'rgba(220,38,38,0.85)', zIndex: 5, pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'rgba(220,38,38,0.85)', zIndex: 5, pointerEvents: 'none' }} />
-              {/* center red guide lines (vertical + horizontal) */}
-              <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'rgba(220,38,38,0.12)', zIndex: 0, pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'rgba(220,38,38,0.12)', zIndex: 0, pointerEvents: 'none' }} />
+              {/* center red guide lines (vertical + horizontal) - editor only, marked for removal from exported HTML */}
+              <div className="editor-guide-line" style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'rgba(220,38,38,0.85)', zIndex: 5, pointerEvents: 'none' }} />
+              <div className="editor-guide-line" style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'rgba(220,38,38,0.85)', zIndex: 5, pointerEvents: 'none' }} />
+              {/* faint red guide lines as background grid - also editor only */}
+              <div className="editor-guide-line" style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'rgba(220,38,38,0.12)', zIndex: 0, pointerEvents: 'none' }} />
+              <div className="editor-guide-line" style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'rgba(220,38,38,0.12)', zIndex: 0, pointerEvents: 'none' }} />
 
               {/* positioned blocks */}
               {blocks.map((b, idx) => {
@@ -1080,6 +1152,104 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         </div>
       </div>
       {/* Inspector moved to parent (ReportBuilder Page) - Canvas should not render inspector alongside itself */}
+
+      {/* Context menu for blocks and placeholders */}
+      {contextMenu && (
+        <div
+          className="fixed bg-white border border-gray-300 rounded shadow-lg z-50 py-1"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onMouseLeave={() => setContextMenu(null)}
+        >
+          {contextMenu.target === 'block' && (
+            <>
+              <button
+                className="w-full text-left px-4 py-1.5 text-sm hover:bg-gray-100"
+                onClick={() => {
+                  if (contextMenu.id) {
+                    const block = blocksRef.current.find(b => String(b.id) === String(contextMenu.id));
+                    if (block) {
+                      setEditingBlockId(block.id);
+                      setTextModalHtml(block.html);
+                      setIsTextModalOpen(true);
+                    }
+                  }
+                  setContextMenu(null);
+                }}
+              >
+                Edit
+              </button>
+              <button
+                className="w-full text-left px-4 py-1.5 text-sm hover:bg-gray-100"
+                onClick={() => {
+                  if (contextMenu.id) {
+                    const block = blocksRef.current.find(b => String(b.id) === String(contextMenu.id));
+                    if (block) {
+                      try { navigator.clipboard.writeText(JSON.stringify(block)); } catch (e) { console.error(e); }
+                    }
+                  }
+                  setContextMenu(null);
+                }}
+              >
+                Copy
+              </button>
+              <button
+                className="w-full text-left px-4 py-1.5 text-sm hover:bg-gray-100"
+                onClick={() => {
+                  if (contextMenu.id) {
+                    const block = blocksRef.current.find(b => String(b.id) === String(contextMenu.id));
+                    if (block) {
+                      const copy = { ...JSON.parse(JSON.stringify(block)), id: `b_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, left: (block.left || 0) + 10, top: (block.top || 0) + 10, _localUpdatedAt: Date.now() };
+                      setBlocks(prev => [...prev, copy]);
+                      localChangeLockRef.current = Date.now() + 800;
+                      setTimeout(() => emitChange({ immediate: true } as any), 40);
+                    }
+                  }
+                  setContextMenu(null);
+                }}
+              >
+                Duplicate
+              </button>
+              <button
+                className="w-full text-left px-4 py-1.5 text-sm hover:bg-gray-100 text-red-600"
+                onClick={() => {
+                  if (contextMenu.id) {
+                    setBlocks(prev => prev.filter(b => String(b.id) !== String(contextMenu.id)));
+                    setSelectedBlockId(null);
+                    localChangeLockRef.current = Date.now() + 800;
+                    setTimeout(() => emitChange({ immediate: true } as any), 30);
+                  }
+                  setContextMenu(null);
+                }}
+              >
+                Delete
+              </button>
+            </>
+          )}
+          {contextMenu.target === 'placeholder' && (
+            <>
+              <button
+                className="w-full text-left px-4 py-1.5 text-sm hover:bg-gray-100"
+                onClick={() => {
+                  setContextMenu(null);
+                }}
+              >
+                Edit
+              </button>
+              <button
+                className="w-full text-left px-4 py-1.5 text-sm hover:bg-gray-100 text-red-600"
+                onClick={() => {
+                  if (selectedPlaceholderRef.current) {
+                    try { selectedPlaceholderRef.current.remove(); setSelectedPlaceholder(null); emitChange({ immediate: true } as any); } catch (e) { }
+                  }
+                  setContextMenu(null);
+                }}
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Text editing modal (TinyMCE/Wysiwyg) */}
       {isTextModalOpen && (

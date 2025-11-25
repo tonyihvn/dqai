@@ -18,8 +18,12 @@ const ReportViewPage: React.FC = () => {
   const [uploadedDocs, setUploadedDocs] = useState<any[]>([]);
   const [questions, setQuestions] = useState<any[]>([]);
   const [activityTitle, setActivityTitle] = useState<string | null>(null);
+  const [activityData, setActivityData] = useState<any>(null);
   const [powerbiConfig, setPowerbiConfig] = useState<any>(null);
   const [builtTemplate, setBuiltTemplate] = useState<any>(null);
+  const [templatesForActivity, setTemplatesForActivity] = useState<any[]>([]);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewFormat, setPreviewFormat] = useState<string | null>(null);
   const [powerbiModalOpen, setPowerbiModalOpen] = useState(false);
   const [paperPreviewOpen, setPaperPreviewOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -114,11 +118,11 @@ const ReportViewPage: React.FC = () => {
         if (aRes.ok) setAnswers(await aRes.json() || []);
         if (qRes.ok) setQuestions(await qRes.json() || []);
         if (docs.ok) setUploadedDocs(await docs.json() || []);
-        // fetch activity title
+        // fetch activity (title + data)
         try {
           const actRes = await apiFetch(`/api/activities/${jr.activity_id}`, { credentials: 'include' });
           if (actRes.ok) {
-            const act = await actRes.json(); setActivityTitle(act.title || act.activityTitle || act.name || null);
+            const act = await actRes.json(); setActivityTitle(act.title || act.activityTitle || act.name || null); setActivityData(act);
           }
         } catch (e) { }
         // fetch powerbi config (public)
@@ -133,6 +137,13 @@ const ReportViewPage: React.FC = () => {
             if (t.ok) { const tj = await t.json(); setBuiltTemplate(tj); }
           }
         } catch (e) { /* ignore */ }
+        // fetch all templates for this activity so we can show buttons to build any of them
+        try {
+          const tplRes = await apiFetch(`/api/report_templates?activityId=${jr.activity_id}`);
+          if (tplRes.ok) {
+            const tplJson = await tplRes.json(); setTemplatesForActivity(Array.isArray(tplJson) ? tplJson : []);
+          }
+        } catch (e) { setTemplatesForActivity([]); }
       } catch (e) { console.error(e); }
       setLoading(false);
     };
@@ -232,28 +243,90 @@ const ReportViewPage: React.FC = () => {
           <p className="text-sm text-gray-500">Submitted: {new Date(report.submission_date).toLocaleString()}</p>
           <div className="inline-flex items-center gap-2">
             <Button onClick={handlePrintFormatted}>Download PDF</Button>
-            <Button variant="secondary" onClick={handlePreviewPdf}>Preview PDF</Button>
-            {builtTemplate && (
-              <Button
-                variant="secondary"
-                onClick={() => setPaperPreviewOpen(true)}
-                title="Open the built report template with this report's answers"
-              >
-                {(() => {
-                  // Extract template name from builtTemplate
-                  if (builtTemplate.name) return builtTemplate.name;
-                  if (typeof builtTemplate.template_json === 'string') {
+            {/* Replace single 'Preview PDF' with one button per template for this activity */}
+            {(templatesForActivity || []).map((tpl: any) => (
+              <Button key={tpl.id} variant="secondary" onClick={async () => {
+                try {
+                  const tplObj = (typeof tpl.template_json === 'string') ? JSON.parse(tpl.template_json || '{}') : (tpl.template_json || {});
+                  let fmt = (tplObj.displayFormat || 'pdf').toString().toLowerCase();
+                  const supported = ['pdf', 'docx', 'xlsx', 'image'];
+                  if (!supported.includes(fmt)) fmt = 'pdf';
+
+                  // Fill placeholders using current report data (questions, answers, uploadedDocs, activityData)
+                  const fillTemplate = (htmlStr: string) => {
                     try {
-                      const parsed = JSON.parse(builtTemplate.template_json);
-                      return parsed.name || 'View Report';
-                    } catch (e) {
-                      return 'View Report';
-                    }
+                      let out = String(htmlStr || '');
+                      const qMap: Record<string, any> = {};
+                      for (const q of questions || []) { try { if (q && (q.id !== undefined)) qMap[String(q.id)] = q; if (q && (q.qid !== undefined)) qMap[String(q.qid)] = q; if (q && (q.question_id !== undefined)) qMap[String(q.question_id)] = q; } catch (e) { } }
+                      const answersMap: Record<string, string> = {};
+                      for (const a of answers || []) { try { const qid = String(a.question_id || a.questionId || a.qid || ''); if (!qid) continue; if (!answersMap[qid]) { const val = (typeof a.answer_value === 'object') ? JSON.stringify(a.answer_value) : String(a.answer_value || ''); answersMap[qid] = val; } } catch (e) { } }
+                      const escapeHtml = (s: any) => { if (s === null || s === undefined) return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+
+                      out = out.replace(/\{\{question_(\w+)\}\}/gi, (m: any, qid: any) => { const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`; });
+
+                      out = out.replace(/\{\{activity_([a-zA-Z0-9_]+)\}\}/gi, (m: any, field: any) => { try { if (!activityData) return ''; const val = activityData[field] ?? activityData[field.toLowerCase()] ?? ''; return escapeHtml(val); } catch (e) { return ''; } });
+
+                      out = out.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m: any, qid: any) => {
+                        const q = (questions || []).find(x => String(x.id) === String(qid) || String(x.qid) === String(qid) || String(x.question_id) === String(qid)) || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = (answers || []).find(a => String(a.question_id || a.qid || a.questionId) === String(qid))?.answer_value || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                      });
+
+                      out = out.replace(/<div[^>]*data-upload-id=["']?(\d+)["']?[^>]*>[\s\S]*?<\/div>/gi, (m: any, id: any) => {
+                        try {
+                          const doc = (uploadedDocs || []).find(d => String(d.id) === String(id)); if (!doc) return `<div>Uploaded table ${escapeHtml(id)} not found</div>`;
+                          const rows = Array.isArray(doc.file_content) ? doc.file_content : (Array.isArray(doc.dataset_data) ? doc.dataset_data : []);
+                          if (!rows || rows.length === 0) return '<div>No table data</div>';
+                          const keys = Object.keys(rows[0] || {});
+                          let html = '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr>';
+                          for (const k of keys) html += `<th style="border:1px solid #ddd;padding:6px;background:#f7f7f7;text-align:left">${escapeHtml(k)}</th>`;
+                          html += '</tr></thead><tbody>';
+                          for (const r of rows) { html += '<tr>'; for (const k of keys) { const val = r && typeof r === 'object' && (r[k] !== undefined && r[k] !== null) ? String(r[k]) : ''; html += `<td style="border:1px solid #ddd;padding:6px">${escapeHtml(val)}</td>`; } html += '</tr>'; }
+                          html += '</tbody></table></div>';
+                          return html;
+                        } catch (e) { return `<div>Failed to render uploaded table ${id}</div>`; }
+                      });
+
+                      return out;
+                    } catch (e) { return htmlStr || ''; }
+                  };
+
+                  const html = tplObj.html || '';
+                  const filled = fillTemplate(html);
+                  if (!filled || String(filled).trim() === '') { try { swalError('Empty template', 'Cannot build an empty template'); } catch (e) { } return; }
+
+                  const payload: any = { html: filled, format: fmt, filename: tpl.name || 'report', paperSize: tplObj.paperSize || 'A4', orientation: tplObj.orientation || 'portrait', context: { activityData, questionsList: questions, answersList: answers, uploadedDocs } };
+                  const res = await apiFetch('/api/build_report', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                  if (!res.ok) { const txt = await res.text().catch(() => ''); try { swalError('Build failed', txt || 'Failed to build report'); } catch (e) { } return; }
+                  const j = await res.json(); const url = j.url || j.path || null;
+                  if (!url) { try { swalError('Build failed', 'Server did not return a URL'); } catch (e) { } return; }
+                  // handle by format
+                  if (fmt === 'pdf') {
+                    setPreviewUrl(url);
+                    setPreviewFormat('pdf');
+                    setBuiltTemplate(tpl);
+                    setPaperPreviewOpen(true);
+                  } else if (fmt === 'image') {
+                    // open lightbox with image
+                    const imgUrl = url;
+                    setImageModalUrl(imgUrl);
+                    setImageModalOpen(true);
+                  } else if (fmt === 'docx' || fmt === 'xlsx') {
+                    // download
+                    try {
+                      const filenameFormat = tplObj.filenameFormat || tplObj.fileName || tplObj.nameFormat || tpl.name || `report_${report.id}`;
+                      const interpolate = (str: string) => String(str || '').replace(/\{\{\s*activity_title\s*\}\}/gi, activityTitle || '').replace(/\{\{\s*report_id\s*\}\}/gi, String(report.id || '')).replace(/\{\{\s*submission_date\s*\}\}/gi, String(report.submission_date || '')).replace(/[^a-zA-Z0-9-_\. ]/g, '_');
+                      const filename = interpolate(filenameFormat) + (fmt === 'docx' ? '.docx' : '.xlsx');
+                      const base = getApiBase(); const fullUrl = url.startsWith('http') ? url : (base ? `${base}${url}` : url);
+                      const resp = await fetch(fullUrl, { credentials: 'include' }); if (!resp.ok) { window.open(fullUrl, '_blank'); return; }
+                      const blob = await resp.blob(); const blobUrl = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = blobUrl; a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(blobUrl); }, 500);
+                    } catch (e) { window.open(url, '_blank'); }
+                  } else {
+                    // fallback open in new tab
+                    const full = url.startsWith('http') ? url : ((getApiBase() || '') + url);
+                    window.open(full, '_blank');
                   }
-                  return builtTemplate.template_json?.name || 'View Report';
-                })()}
-              </Button>
-            )}
+                } catch (e) { console.error('Failed to build template', e); try { swalError('Build failed', String(e?.message || e)); } catch (err) { } }
+              }}>{tpl.name || 'Preview'}</Button>
+            ))}
             <Button variant="secondary" onClick={handleEmail}>Forward via Email</Button>
           </div>
           <Button variant="secondary" onClick={() => navigate(`/activities/${report.activity_id}/followups?reportId=${report.id}`)}>Edit Followups</Button>
@@ -261,45 +334,7 @@ const ReportViewPage: React.FC = () => {
             {report?.status !== 'Completed' && (
               <Button onClick={() => setReviewModalOpen(true)}>Add / Edit Review</Button>
             )}
-            {builtTemplate && (
-              <Button onClick={async () => {
-                try {
-                  const tplObj = (typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {});
-                  const fmt = (tplObj.displayFormat || 'pdf').toString().toLowerCase();
-                  const base = getApiBase();
-                  const baseUrl = base || '';
-                  let url = '';
-                  if (fmt === 'pdf') url = `${baseUrl}/api/reports/${report.id}/pdf?template=1`;
-                  else if (fmt === 'docx') url = `${baseUrl}/api/reports/${report.id}/docx?template=1`;
-                  else if (fmt === 'xlsx') url = `${baseUrl}/api/reports/${report.id}/xlsx?template=1`;
-                  else if (fmt === 'image') url = `${baseUrl}/api/reports/${report.id}/image?template=1`;
-                  else url = `${baseUrl}/api/reports/${report.id}/pdf?template=1`;
-
-                  // derive a user-friendly filename from template settings if provided
-                  const filenameFormat = tplObj.filenameFormat || tplObj.fileName || tplObj.nameFormat || builtTemplate.name || `report_${report.id}`;
-                  const interpolate = (str: string) => {
-                    return String(str || '').replace(/\{\{\s*activity_title\s*\}\}/gi, activityTitle || '')
-                      .replace(/\{\{\s*report_id\s*\}\}/gi, String(report.id || ''))
-                      .replace(/\{\{\s*submission_date\s*\}\}/gi, String(report.submission_date || '')).replace(/[^a-zA-Z0-9-_\. ]/g, '_');
-                  };
-                  const filename = interpolate(filenameFormat) + (fmt === 'pdf' ? '.pdf' : fmt === 'docx' ? '.docx' : fmt === 'xlsx' ? '.xlsx' : fmt === 'image' ? '.png' : '.pdf');
-
-                  // attempt to fetch and download with a controlled filename
-                  const resp = await fetch(url, { credentials: 'include' });
-                  if (!resp.ok) { window.open(url, '_blank'); return; }
-                  const blob = await resp.blob();
-                  const blobUrl = window.URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = blobUrl;
-                  a.download = filename;
-                  document.body.appendChild(a);
-                  a.click();
-                  setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(blobUrl); }, 500);
-                } catch (e) {
-                  try { const tplObj = (typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {}); const fmt = (tplObj.displayFormat || 'pdf').toString().toLowerCase(); const base = getApiBase(); const baseUrl = base || ''; let url = fmt === 'docx' ? `${baseUrl}/api/reports/${report.id}/docx?template=1` : fmt === 'xlsx' ? `${baseUrl}/api/reports/${report.id}/xlsx?template=1` : `${baseUrl}/api/reports/${report.id}/pdf?template=1`; window.open(url, '_blank'); } catch (err) { console.error(err); }
-                }
-              }}>{`Download: ${builtTemplate.name || 'Built Report'}`}</Button>
-            )}
+            {/* builtTemplate download button removed — per-template buttons render above and handle preview/download behavior */}
           </div>
         </div>
       </div>
@@ -436,25 +471,30 @@ const ReportViewPage: React.FC = () => {
       {/* Paper preview modal for built template HTML */}
       <Modal
         isOpen={!!paperPreviewOpen}
-        onClose={() => setPaperPreviewOpen(false)}
+        onClose={() => { setPaperPreviewOpen(false); setPreviewUrl(null); setPreviewFormat(null); }}
         title={builtTemplate ? `${builtTemplate.name || 'Report'} — Report ${report.id}` : `Report ${report.id}`}
         size="xl"
       >
         <div style={{ display: 'flex', justifyContent: 'center' }}>
           <div style={{ background: '#f3f4f6', padding: 16, maxWidth: '95%', overflow: 'auto' }}>
-            {builtTemplate ? (() => {
-              // Prefer showing the actual generated PDF inside an iframe so preview matches printed output.
+            {(previewUrl || builtTemplate) ? (() => {
+              // If we have a built preview URL (from /api/build_report), prefer that. Otherwise fall back
+              // to the older server-side PDF endpoint using builtTemplate.
               const base = getApiBase();
-              const url = base ? `${base}/api/reports/${report.id}/pdf?template=1` : `/api/reports/${report.id}/pdf?template=1`;
-              // As a graceful fallback (if PDF endpoint is unavailable), also parse template HTML
-              const tplObj = (typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {});
-              const html = tplObj.html || builtTemplate.html || '';
+              const urlToUse = previewUrl ? (previewUrl.startsWith('http') ? previewUrl : (base ? `${base}${previewUrl}` : previewUrl)) : (base ? `${base}/api/reports/${report.id}/pdf?template=1` : `/api/reports/${report.id}/pdf?template=1`);
+              const tplObj = builtTemplate ? ((typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {})) : {};
+              const html = tplObj.html || builtTemplate?.html || '';
               const dims = getPaperDimensions(tplObj);
               const widthMm = dims.widthMm; const heightMm = dims.heightMm;
               return (
                 <div style={{ background: '#ffffff', boxShadow: '0 1px 4px rgba(0,0,0,0.08)', padding: 12 }}>
                   <div style={{ width: '100%', height: '80vh' }}>
-                    <iframe src={url} title={`report-pdf-${report.id}`} style={{ width: '100%', height: '100%', border: 'none' }} />
+                    {/* If preview is an image, show image; otherwise show iframe for PDF */}
+                    {previewFormat === 'image' ? (
+                      <div style={{ display: 'flex', justifyContent: 'center' }}><img src={urlToUse} alt="preview" style={{ maxWidth: '100%', maxHeight: '80vh' }} /></div>
+                    ) : (
+                      <iframe src={urlToUse} title={`report-pdf-${report.id}`} style={{ width: '100%', height: '100%', border: 'none' }} />
+                    )}
                   </div>
                   {(!html || String(html).trim() === '') ? null : (
                     <div className="mt-4" style={{ width: `${widthMm}mm`, height: `${heightMm}mm`, overflow: 'auto', direction: 'ltr' }}>

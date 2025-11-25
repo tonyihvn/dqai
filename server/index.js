@@ -447,9 +447,74 @@ app.post('/api/build_report', async (req, res) => {
         };
 
         const filled = (req.body && req.body.context) ? substituteHtml(html, req.body.context) : html;
-        const wrapperHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:0;background:#fff} table{page-break-inside:auto;} tr{page-break-inside:avoid; page-break-after:auto;} </style></head><body>${filled}</body></html>`;
 
-        if (fmt === 'pdf') {
+        // Format-specific HTML preprocessing
+        const preprocessHtml = (htmlStr, format) => {
+            let out = String(htmlStr || '');
+
+            // Remove any editor-only guide lines so they never appear in final output
+            // matches elements with class 'editor-guide-line' and removes them
+            try {
+                out = out.replace(/<[^>]*class=["'][^"'>]*editor-guide-line[^"'>]*["'][^>]*>[\s\S]*?<\/[a-zA-Z0-9]+>/gi, '');
+                out = out.replace(/<[^>]*class=["'][^"'>]*editor-guide-line[^"'>]*["'][^>]*\/>/gi, '');
+            } catch (e) { /* ignore */ }
+
+            // Remove editor-only resize handles and visual overlays that might have been
+            // inadvertently saved into template HTML. These are small absolutely-positioned
+            // divs added by the canvas for resizing (cursor:*resize*) and selection borders.
+            try {
+                // remove inner handle elements inside tpl-blocks (match common resize cursor styles)
+                out = out.replace(/(<div[^>]*class=["']?tpl-block["']?[^>]*>)([\s\S]*?)(<\/div>)/gi, (m, open, inner, close) => {
+                    try {
+                        // strip child elements that have resize cursors
+                        const cleanedInner = inner.replace(/<div[^>]*style=["'][^"']*cursor:\s*(?:se-resize|sw-resize|ne-resize|nw-resize|e-resize|w-resize|n-resize|s-resize|ew-resize|ns-resize)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
+                        // remove any inline editor-only borders/handles that may have been added to the block content
+                        const cleanedInner2 = cleanedInner.replace(/<div[^>]*data-?editor-?handle[^>]*>[\s\S]*?<\/div>/gi, '');
+                        return `${open}${cleanedInner2}${close}`;
+                    } catch (e) { return m; }
+                });
+
+                // remove border/box-shadow/padding/background inline styles on tpl-block wrappers
+                out = out.replace(/(<div[^>]*class=["']?tpl-block["']?[^>]*style=["'])([^"']*)(["'][^>]*>)/gi, (m, p1, styles, p3) => {
+                    try {
+                        let s = String(styles || '');
+                        // remove border, box-shadow, padding and other editor visual styles
+                        s = s.replace(/border:[^;]+;?/gi, '');
+                        s = s.replace(/box-shadow:[^;]+;?/gi, '');
+                        s = s.replace(/padding:[^;]+;?/gi, '');
+                        s = s.replace(/background:[^;]+;?/gi, '');
+                        // collapse multiple semicolons and trim
+                        s = s.replace(/;{2,}/g, ';').replace(/^;|;$/g, '').trim();
+                        return `${p1}${s}${p3}`;
+                    } catch (e) { return m; }
+                });
+            } catch (e) { /* ignore cleaning errors */ }
+
+            // For DOCX: attempt to preserve both left/top by converting absolute positioning to
+            // margin-left / margin-top so Word can approximate object placement
+            if (format === 'docx') {
+                out = out.replace(/<div[^>]*class=["']?tpl-block["']?[^>]*style=["']([^"']*)["'][^>]*>([\s\S]*?)<\/div>/gi, (match, style, content) => {
+                    try {
+                        const leftMatch = style.match(/left:\s*([0-9.]+)px/);
+                        const topMatch = style.match(/top:\s*([0-9.]+)px/);
+                        const leftVal = leftMatch ? Math.max(0, parseInt(leftMatch[1])) : 0;
+                        const topVal = topMatch ? Math.max(0, parseInt(topMatch[1])) : 0;
+                        const marginLeft = Math.max(0, leftVal - 20);
+                        const marginTop = Math.max(0, topVal - 0);
+                        return `<div style="margin-left:${marginLeft}px;margin-top:${marginTop}px;margin-bottom:12px;page-break-inside:avoid;">${content}</div>`;
+                    } catch (e) { return `<div>${content}</div>`; }
+                });
+            }
+
+            // Remove header-only marker from uploaded tables in final output
+            // The marker was only for canvas preview
+            out = out.replace(/\s+data-header-only="true"/gi, '');
+
+            return out;
+        };
+
+        const filledProcessed = preprocessHtml(filled, fmt);
+        const wrapperHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:0;background:#fff} table{page-break-inside:auto;} tr{page-break-inside:avoid; page-break-after:auto;} </style></head><body>${filledProcessed}</body></html>`; if (fmt === 'pdf') {
             // render PDF using puppeteer and respect paper size/orientation
             const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
             const page = await browser.newPage();
@@ -463,6 +528,27 @@ app.post('/api/build_report', async (req, res) => {
             await browser.close();
             const publicUrl = `/builds/${outName}`;
             return res.json({ url: publicUrl, path: outPath });
+        }
+
+        if (fmt === 'image' || fmt === 'jpg' || fmt === 'jpeg') {
+            // render an image (JPG) of the page using puppeteer
+            try {
+                const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+                const page = await browser.newPage();
+                await page.setContent(wrapperHtml, { waitUntil: 'networkidle0' });
+
+                const outName = `${safeName}_${Date.now()}.jpg`;
+                const outPath = path.join(buildsRoot, outName);
+                // Screenshot with quality settings for JPG output
+                await page.screenshot({ path: outPath, fullPage: true, type: 'jpeg', quality: 90 });
+                await browser.close();
+                const publicUrl = `/builds/${outName}`;
+                console.debug(`[build_report] image (jpg) generated: ${outName}`);
+                return res.json({ url: publicUrl, path: outPath });
+            } catch (e) {
+                console.error('image rendering failed', e);
+                return res.status(500).json({ error: 'Failed to generate image', details: String(e) });
+            }
         }
 
         if (fmt === 'docx') {
@@ -487,9 +573,50 @@ app.post('/api/build_report', async (req, res) => {
             try {
                 const { JSDOM } = await import('jsdom');
                 const dom = new JSDOM(wrapperHtml);
-                const table = dom.window.document.querySelector('table');
+
+                // if we have positioned blocks in the HTML (tpl-block), it's likely a visual layout report
+                // In that case, render a screenshot and embed the image into a single-sheet XLSX so layout/positions are preserved visually
+                const hasBlocks = Boolean(dom.window.document.querySelector('.tpl-block'));
                 const workbook = new ExcelJS.Workbook();
                 const sheet = workbook.addWorksheet('Sheet1');
+
+                if (hasBlocks) {
+                    // render screenshot and embed as image
+                    try {
+                        const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+                        const page = await browser.newPage();
+                        await page.setContent(wrapperHtml, { waitUntil: 'networkidle0' });
+
+                        const imgName = `${safeName}_${Date.now()}.jpg`;
+                        const imgPath = path.join(buildsRoot, imgName);
+                        await page.screenshot({ path: imgPath, fullPage: true, type: 'jpeg', quality: 90 });
+                        await browser.close();
+
+                        // compute sheet image size based on paper size
+                        const paperMm = { A4: { w: 210, h: 297 }, Letter: { w: 216, h: 279 }, A3: { w: 297, h: 420 } };
+                        const mm = paperMm[paperSize] || paperMm['A4'];
+                        const physW = (orientation === 'landscape') ? mm.h : mm.w;
+                        const physH = (orientation === 'landscape') ? mm.w : mm.h;
+                        const pxPerMm = 96 / 25.4;
+                        const widthPx = Math.round(physW * pxPerMm);
+                        const heightPx = Math.round(physH * pxPerMm);
+
+                        const imageId = workbook.addImage({ filename: imgPath, extension: 'jpeg' });
+                        sheet.addImage(imageId, { tl: { col: 0, row: 0 }, ext: { width: widthPx, height: heightPx } });
+
+                        const outName = `${safeName}_${Date.now()}.xlsx`;
+                        const outPath = path.join(buildsRoot, outName);
+                        await workbook.xlsx.writeFile(outPath);
+                        const publicUrl = `/builds/${outName}`;
+                        return res.json({ url: publicUrl, path: outPath });
+                    } catch (e) {
+                        console.error('xlsx (image-embed) conversion failed', e);
+                        // fall back to table/text conversion below
+                    }
+                }
+
+                // Fallback: convert first HTML table into Excel cells
+                const table = dom.window.document.querySelector('table');
                 if (table) {
                     const rows = Array.from(table.querySelectorAll('tr'));
                     for (const tr of rows) {
@@ -500,6 +627,7 @@ app.post('/api/build_report', async (req, res) => {
                     // no table found - write the HTML as a single cell
                     sheet.addRow([dom.window.document.body.textContent || '']);
                 }
+
                 const outName = `${safeName}_${Date.now()}.xlsx`;
                 const outPath = path.join(buildsRoot, outName);
                 await workbook.xlsx.writeFile(outPath);
@@ -511,7 +639,8 @@ app.post('/api/build_report', async (req, res) => {
             }
         }
 
-        return res.status(400).json({ error: 'Unsupported format' });
+        console.error(`[build_report] Unsupported format: ${fmt} (original: ${format})`);
+        return res.status(400).json({ error: 'Unsupported format', providedFormat: fmt });
     } catch (e) {
         console.error('build_report failed', e);
         try { return res.status(500).json({ error: String(e) }); } catch (err) { return res.status(500).end(); }

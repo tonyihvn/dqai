@@ -4,7 +4,7 @@ import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import DataTable from '../components/ui/DataTable';
 import { confirm, error as swalError, success as swalSuccess } from '../components/ui/swal';
-import { Bar, Pie, Line } from 'react-chartjs-2';
+import { Bar, Pie, Line, Scatter } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -16,9 +16,10 @@ import {
   Title,
   Tooltip,
   Legend,
+  Filler,
 } from 'chart.js';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Title, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Filler, Title, Tooltip, Legend);
 
 const ActivityDashboardPage: React.FC = () => {
   const { activityId } = useParams<{ activityId: string }>();
@@ -257,8 +258,12 @@ const ActivityDashboardPage: React.FC = () => {
                     <label className="text-xs text-gray-600 mr-2">Chart</label>
                     <select className="p-1 border rounded text-sm" value={chartType} onChange={e => setChartTypes(prev => ({ ...prev, [q.id]: e.target.value }))}>
                       <option value="bar">Bar</option>
+                      <option value="column">Column (alias of Bar)</option>
+                      <option value="stackedBar">Stacked Bar</option>
                       <option value="pie">Pie</option>
                       <option value="line">Line</option>
+                      <option value="area">Area</option>
+                      <option value="scatter">Scatter</option>
                       <option value="table">Table</option>
                     </select>
                   </div>
@@ -267,8 +272,17 @@ const ActivityDashboardPage: React.FC = () => {
                   <div className="text-sm">Responses: {(answersByQuestion[q.id] || []).length}</div>
                   <div className="mt-2 h-44">
                     {chartType === 'bar' && <Bar data={data} options={{ responsive: true, maintainAspectRatio: false }} />}
+                    {chartType === 'column' && <Bar data={data} options={{ responsive: true, maintainAspectRatio: false }} />}
+                    {chartType === 'stackedBar' && <Bar data={data} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } }, scales: { x: { stacked: true }, y: { stacked: true } } }} />}
                     {chartType === 'pie' && <Pie data={{ labels: data.labels, datasets: [{ data: data.datasets[0].data, backgroundColor: ['#2563EB', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'] }] }} options={{ responsive: true, maintainAspectRatio: false }} />}
                     {chartType === 'line' && <Line data={{ labels: data.labels, datasets: [{ label: 'Responses', data: data.datasets[0].data, fill: false, borderColor: 'rgba(37,99,235,0.8)' }] }} options={{ responsive: true, maintainAspectRatio: false }} />}
+                    {chartType === 'area' && <Line data={{ labels: data.labels, datasets: [{ label: 'Responses', data: data.datasets[0].data, fill: true, backgroundColor: 'rgba(37,99,235,0.2)', borderColor: 'rgba(37,99,235,0.8)' }] }} options={{ responsive: true, maintainAspectRatio: false }} />}
+                    {chartType === 'scatter' && (() => {
+                      const scatterPoints = data.labels.map((lbl: any, i: number) => ({ x: i + 1, y: data.datasets[0].data[i] }));
+                      const scatterData = { datasets: [{ label: 'Responses (scatter)', data: scatterPoints, backgroundColor: 'rgba(37,99,235,0.7)' }] };
+                      const scatterOptions = { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Category (index)' } }, y: { title: { display: true, text: 'Count' } } } };
+                      return <Scatter data={scatterData} options={scatterOptions} />;
+                    })()}
                     {chartType === 'table' && (
                       <div className="overflow-auto max-h-44 border rounded p-2 bg-gray-50">
                         <table className="min-w-full text-sm">

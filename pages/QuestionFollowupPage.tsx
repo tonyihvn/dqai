@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import { apiFetch } from '../utils/api';
+import { success as swalSuccess, error as swalError } from '../components/ui/swal';
 
 const QuestionFollowupPage: React.FC = () => {
   const { activityId } = useParams<{ activityId: string }>();
@@ -55,11 +56,12 @@ const QuestionFollowupPage: React.FC = () => {
         const updated = await res.json();
         setAnswers(prev => prev.map(a => a.id === updated.id ? updated : a));
         setEditingMap(prev => ({ ...prev, [answerId]: { reviewers_comment: updated.reviewers_comment || '', quality_improvement_followup: updated.quality_improvement_followup || '', score: updated.score ?? null } }));
+        try { swalSuccess('Saved', 'Follow-up saved successfully'); } catch (e) { }
       } else {
         const txt = await res.text().catch(() => '');
-        alert('Failed to save followup: ' + txt);
+        try { swalError('Save failed', txt || 'Failed to save followup'); } catch (e) { }
       }
-    } catch (e) { console.error(e); alert('Failed to save followup'); }
+    } catch (e) { console.error(e); try { swalError('Save failed', 'Failed to save followup'); } catch (err) { } }
   };
 
   if (loading) return <div>Loading...</div>;

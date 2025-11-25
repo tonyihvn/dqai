@@ -94,6 +94,16 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
         editorRef.current = editor;
         // Set initial content only once on init
         if (value) editor.setContent(value);
+
+        // Prevent parent containers from clipping TinyMCE popup/dropdowns
+        try {
+          const root = editor.getContainer && editor.getContainer();
+          if (root && root.parentElement) {
+            // allow dropdowns to render fully
+            root.parentElement.style.overflow = 'visible';
+            root.style.zIndex = '3000';
+          }
+        } catch (err) { /* ignore */ }
       }}
       init={{
         height: 400,
@@ -101,12 +111,16 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
         plugins: [
           'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'anchor',
           'searchreplace', 'visualblocks', 'code', 'fullscreen',
-          'insertdatetime', 'media', 'table', 'help', 'wordcount', 'directionality'
+          'insertdatetime', 'media', 'table', 'help', 'wordcount', 'directionality',
+          'codesample'
         ],
         toolbar:
           'undo redo | table media charmap image | formatselect | bold italic backcolor | ' +
           'alignleft aligncenter alignright alignjustify | bullist numlist outdent indent | ' +
-          'removeformat | ltr rtl | help',
+          'removeformat | ltr rtl | code',
+        toolbar_mode: 'floating',
+        zIndex: 3000,
+        // keep default content styling, but ensure popups are visible
         content_style:
           'body { font-family:Arial,sans-serif; font-size:14px; direction:ltr; unicode-bidi:embed; }'
       }}
