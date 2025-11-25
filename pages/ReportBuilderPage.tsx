@@ -18,6 +18,7 @@ const ReportBuilderPage: React.FC = () => {
   const [activityData, setActivityData] = useState<any | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<any | null>(null);
   const canvasRef = React.useRef<any>(null);
+  const canvasChangeTimerRef = useRef<number | null>(null);
   const [reportsList, setReportsList] = useState<any[]>([]);
   const [blockEditHtml, setBlockEditHtml] = useState<string>('');
   const [blockEditLeft, setBlockEditLeft] = useState<number | string>('');
@@ -25,6 +26,10 @@ const ReportBuilderPage: React.FC = () => {
   const [answersList, setAnswersList] = useState<any[]>([]);
   const [uploadedDocs, setUploadedDocs] = useState<any[]>([]);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const [buildUrl, setBuildUrl] = useState<string | null>(null);
+  const [buildFormat, setBuildFormat] = useState<string>('pdf');
+  const [iframeLoading, setIframeLoading] = useState<boolean>(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState<boolean>(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -171,6 +176,20 @@ const ReportBuilderPage: React.FC = () => {
       if (updates.meta) existing = { ...existing, ...updates.meta };
       el.setAttribute('data-block-json', JSON.stringify(existing).replace(/</g, '&lt;'));
       tplObj.html = doc.body ? doc.body.innerHTML : html;
+
+      // Also update the blocks array in template_json to keep it in sync with HTML
+      // This ensures changes are reflected in the structured data format
+      if (!Array.isArray(tplObj.blocks)) tplObj.blocks = [];
+      const blockIdx = tplObj.blocks.findIndex((b: any) => String(b.id) === String(blockId));
+      if (blockIdx !== -1) {
+        const updatedBlock = { ...tplObj.blocks[blockIdx] };
+        if (updates.left !== undefined) updatedBlock.left = updates.left;
+        if (updates.top !== undefined) updatedBlock.top = updates.top;
+        if (updates.html !== undefined) updatedBlock.html = updates.html;
+        if (updates.meta !== undefined) updatedBlock.meta = { ...updatedBlock.meta, ...updates.meta };
+        tplObj.blocks[blockIdx] = updatedBlock;
+      }
+
       setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
     } catch (e) { console.error('Failed to apply block update', e); }
   };
@@ -178,7 +197,9 @@ const ReportBuilderPage: React.FC = () => {
   const buildTableHtml = (doc: any) => {
     try {
       const rows = Array.isArray(doc.file_content) ? doc.file_content : (Array.isArray(doc.dataset_data) ? doc.dataset_data : []);
-      if (!rows || rows.length === 0) return '<div>No table data</div>';
+      if (!rows || rows.length === 0) {
+        return '<div>No table data</div>';
+      }
       const keys = Object.keys(rows[0] || {});
       let html = '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr>';
       for (const k of keys) html += `<th style="border:1px solid #ddd;padding:6px;background:#f7f7f7;text-align:left">${k}</th>`;
@@ -212,6 +233,30 @@ const ReportBuilderPage: React.FC = () => {
     setBlockEditLeft(selectedBlock.left ?? '');
     setBlockEditTop(selectedBlock.top ?? '');
   }, [selectedBlock]);
+
+  // Keep selectedBlock in sync when template blocks change (e.g., after resize/move/edit)
+  // This ensures the inspector always shows the latest block data
+  useEffect(() => {
+    if (!selectedBlock || !editing) return;
+    const tplObj = getTplObj(editing.template_json);
+    const blocks = Array.isArray(tplObj.blocks) ? tplObj.blocks : [];
+    const updatedBlock = blocks.find((b: any) => String(b.id) === String(selectedBlock.id));
+    if (updatedBlock) {
+      setSelectedBlock(updatedBlock);
+    }
+  }, [editing?.template_json, selectedBlock?.id]);
+
+  // Inspector block edit/save/remove logic
+  useEffect(() => {
+    // Keep selectedBlock in sync with parent template blocks
+    if (!selectedBlock || !editing) return;
+    const tplObj = typeof editing.template_json === 'string' ? JSON.parse(editing.template_json) : (editing.template_json || {});
+    const blocks = Array.isArray(tplObj.blocks) ? tplObj.blocks : [];
+    const updatedBlock = blocks.find((b: any) => String(b.id) === String(selectedBlock.id));
+    if (updatedBlock && (updatedBlock.left !== selectedBlock.left || updatedBlock.top !== selectedBlock.top || updatedBlock.html !== selectedBlock.html || JSON.stringify(updatedBlock.meta) !== JSON.stringify(selectedBlock.meta))) {
+      setSelectedBlock(updatedBlock);
+    }
+  }, [editing?.template_json, selectedBlock?.id]);
 
   const startNew = () => setEditing({ id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '<div><h1>{{activity_title}}</h1><p>Report: {{report_id}}</p></div>' }) });
   // ensure clicking startNew shows panel
@@ -307,7 +352,100 @@ const ReportBuilderPage: React.FC = () => {
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" variant="secondary" onClick={() => edit(t)}>Edit</Button>
-                    <Button size="sm" onClick={() => { setIsPreviewOpen(true); setEditing(t); }}>Preview</Button>
+                    <Button size="sm" onClick={async () => {
+                      setEditing(t);
+                      let builtUrl: string | null = null;
+                      try {
+                        setBuilding(true);
+                        setBuildUrl(null);
+                        setIframeLoading(true);
+                        const tplObj = getTplObj(t.template_json);
+                        let fmt = (tplObj.displayFormat || 'pdf').toString().toLowerCase();
+                        // normalize to supported server formats (pdf|docx|xlsx). If the template
+                        // asks for an unsupported format (e.g. image), fall back to PDF so the
+                        // preview won't fail with "Unsupported format" on the server.
+                        const supported = ['pdf', 'docx', 'xlsx'];
+                        if (!supported.includes(fmt)) fmt = 'pdf';
+
+                        // prefer canvas combined HTML if available
+                        let combinedHtml = '';
+                        try { if (canvasRef.current && typeof canvasRef.current.getCombinedHtml === 'function') combinedHtml = await canvasRef.current.getCombinedHtml(); } catch (e) { combinedHtml = tplObj.html || ''; }
+                        if (!combinedHtml) combinedHtml = tplObj.html || '';
+
+                        // fill placeholders with preview data before sending to server
+                        const fillTemplate = (htmlStr: string) => {
+                          try {
+                            let out = String(htmlStr || '');
+                            const qMap: Record<string, any> = {};
+                            for (const q of questionsList || []) {
+                              try { if (q && (q.id !== undefined)) qMap[String(q.id)] = q; if (q && (q.qid !== undefined)) qMap[String(q.qid)] = q; if (q && (q.question_id !== undefined)) qMap[String(q.question_id)] = q; } catch (e) { }
+                            }
+                            const answersMap: Record<string, string> = {};
+                            for (const a of answersList || []) {
+                              try {
+                                const qid = String(a.question_id || a.questionId || a.qid || ''); if (!qid) continue;
+                                if (!answersMap[qid]) { const val = (typeof a.answer_value === 'object') ? JSON.stringify(a.answer_value) : String(a.answer_value || ''); answersMap[qid] = val; }
+                              } catch (e) { }
+                            }
+                            const escapeHtml = (s: any) => { if (s === null || s === undefined) return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+
+                            out = out.replace(/\{\{question_(\w+)\}\}/gi, (m, qid) => {
+                              const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                            });
+
+                            out = out.replace(/\{\{activity_([a-zA-Z0-9_]+)\}\}/gi, (m, field) => {
+                              try { if (!activityData) return ''; const val = activityData[field] ?? activityData[field.toLowerCase()] ?? ''; return escapeHtml(val); } catch (e) { return ''; }
+                            });
+
+                            out = out.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m, qid) => {
+                              const q = (questionsList || []).find(x => String(x.id) === String(qid) || String(x.qid) === String(qid) || String(x.question_id) === String(qid)) || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = (answersList || []).find(a => String(a.question_id || a.qid || a.questionId) === String(qid))?.answer_value || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                            });
+
+                            out = out.replace(/<div[^>]*data-upload-id=["']?(\d+)["']?[^>]*>[\s\S]*?<\/div>/gi, (m, id) => {
+                              try {
+                                const doc = (uploadedDocs || []).find(d => String(d.id) === String(id)); if (!doc) return `<div>Uploaded table ${escapeHtml(id)} not found</div>`;
+                                const rows = Array.isArray(doc.file_content) ? doc.file_content : (Array.isArray(doc.dataset_data) ? doc.dataset_data : []);
+                                if (!rows || rows.length === 0) return '<div>No table data</div>';
+                                const keys = Object.keys(rows[0] || {});
+                                let html = '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr>';
+                                for (const k of keys) html += `<th style="border:1px solid #ddd;padding:6px;background:#f7f7f7;text-align:left">${escapeHtml(k)}</th>`;
+                                html += '</tr></thead><tbody>';
+                                for (const r of rows) { html += '<tr>'; for (const k of keys) { const val = r && typeof r === 'object' && (r[k] !== undefined && r[k] !== null) ? String(r[k]) : ''; html += `<td style="border:1px solid #ddd;padding:6px">${escapeHtml(val)}</td>`; } html += '</tr>'; }
+                                html += '</tbody></table></div>';
+                                return html;
+                              } catch (e) { return `<div>Failed to render uploaded table ${id}</div>`; }
+                            });
+
+                            return out;
+                          } catch (e) { return htmlStr || ''; }
+                        };
+
+                        const filledHtml = fillTemplate(combinedHtml);
+                        // don't attempt to build empty HTML — server returns 400 for missing html
+                        if (!filledHtml || String(filledHtml).trim() === '') {
+                          setToasts(ts => [...ts, { id: Date.now(), text: 'Cannot preview an empty template — add content first.' }]);
+                          setIframeLoading(false);
+                          setBuilding(false);
+                          return;
+                        }
+
+                        const payload = { html: filledHtml, format: fmt, filename: t.name || 'report', paperSize: tplObj.paperSize || 'A4', orientation: tplObj.orientation || 'portrait', context: { activityData, questionsList, answersList, uploadedDocs } };
+
+                        let builtUrl: string | null = null;
+                        const res = await apiFetch('/api/build_report', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                        if (res.ok) {
+                          const j = await res.json();
+                          const url = j.url || j.path || null;
+                          if (url) { setBuildUrl(url); setBuildFormat(fmt); builtUrl = url; }
+                          else { setToasts(ts => [...ts, { id: Date.now(), text: 'Build succeeded but server did not return a URL' }]); setIframeLoading(false); }
+                        } else { const txt = await res.text(); setToasts(ts => [...ts, { id: Date.now(), text: `Build failed: ${txt}` }]); setIframeLoading(false); }
+
+                      } catch (err) {
+                        console.error('Build request failed', err);
+                        setToasts(ts => [...ts, { id: Date.now(), text: 'Build request failed' }]);
+                        setIframeLoading(false);
+                      } finally { setBuilding(false); if (builtUrl) setIsPreviewOpen(true); }
+                    }}>Preview</Button>
                     <Button size="sm" variant="danger" onClick={() => remove(t.id)}>Delete</Button>
                   </div>
                 </div>
@@ -328,12 +466,44 @@ const ReportBuilderPage: React.FC = () => {
                       {/* CanvasEditor is the primary design surface. TinyMCE is used only inside the CanvasEditor when inserting rich text blocks. */}
                       <CanvasEditor
                         value={(getTplObj(editing.template_json).html) || ''}
+                        initialBlocks={(getTplObj(editing.template_json).blocks) || []}
                         onChange={v => {
                           try {
-                            const tplObj = getTplObj(editing.template_json);
-                            tplObj.html = v;
-                            setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
-                          } catch (err) { setEditing({ ...editing, template_json: JSON.stringify({ html: v }) }); }
+                            // If CanvasEditor marked this update as immediate (insert/delete/convert), apply without debounce
+                            if (v && typeof v === 'object' && (v.immediate === true)) {
+                              // Clear any pending debounced update — an earlier delayed change
+                              // could later overwrite this immediate change and cause inserted
+                              // items to disappear. Ensure immediate updates win.
+                              try { if (canvasChangeTimerRef.current) { window.clearTimeout(canvasChangeTimerRef.current); canvasChangeTimerRef.current = null; } } catch (e) { }
+                              try {
+                                const tplObj = getTplObj(editing.template_json);
+                                if (v && typeof v === 'object' && ('html' in v || 'blocks' in v)) {
+                                  tplObj.html = v.html || tplObj.html || '';
+                                  tplObj.blocks = v.blocks || [];
+                                } else {
+                                  tplObj.html = String(v || tplObj.html || '');
+                                }
+                                setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                              } catch (err) { console.error('Immediate canvas update failed', err); }
+                              return;
+                            }
+                          } catch (e) { /* continue to debounce path */ }
+                          // debounce rapid incoming changes to avoid parent re-setting value while editor is still active
+                          try { if (canvasChangeTimerRef.current) window.clearTimeout(canvasChangeTimerRef.current); } catch (e) { }
+                          canvasChangeTimerRef.current = window.setTimeout(() => {
+                            try {
+                              const tplObj = getTplObj(editing.template_json);
+                              if (v && typeof v === 'object' && ('html' in v || 'blocks' in v)) {
+                                tplObj.html = v.html || tplObj.html || '';
+                                tplObj.blocks = v.blocks || [];
+                              } else {
+                                tplObj.html = String(v || tplObj.html || '');
+                              }
+                              setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                            } catch (err) {
+                              try { setEditing({ ...editing, template_json: JSON.stringify({ html: (v && v.html) || v || '' }) }); } catch (e) { }
+                            }
+                          }, 220) as unknown as number;
                         }}
                         ref={canvasRef}
                         showToolbox={false}
@@ -410,138 +580,143 @@ const ReportBuilderPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Panel contents collapsed by default */}
-          {!panelCollapsed && (
-            <>
-              <div className="mb-2">
-                <label className="block text-xs text-gray-500">Report Name</label>
-                <input dir="ltr" className="mt-1 block w-full border rounded p-2 text-sm" value={editing?.name || ''} onChange={e => setEditing(prev => ({ ...(prev || { id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '' }) }), name: e.target.value }))} />
-              </div>
-              <div className="mb-2">
-                <label className="block text-xs text-gray-500">Activity (optional)</label>
-                <select className="mt-1 block w-full border rounded p-2 text-sm" value={editing?.activity_id || ''} onChange={e => setEditing(prev => ({ ...(prev || { id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '' }) }), activity_id: e.target.value || null }))}>
-                  <option value="">(Any activity)</option>
-                  {activities.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
-                </select>
-              </div>
+          {/* Report Name, Activity and Toolbox are always visible (toolbox remains collapsed by default) */}
+          <div className="mb-2">
+            <label className="block text-xs text-gray-500">Report Name</label>
+            <input dir="ltr" className="mt-1 block w-full border rounded p-2 text-sm" value={editing?.name || ''} onChange={e => setEditing(prev => ({ ...(prev || { id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '' }) }), name: e.target.value }))} />
+          </div>
+          <div className="mb-2">
+            <label className="block text-xs text-gray-500">Activity (optional)</label>
+            <select className="mt-1 block w-full border rounded p-2 text-sm" value={editing?.activity_id || ''} onChange={e => setEditing(prev => ({ ...(prev || { id: null, name: '', activity_id: null, template_json: JSON.stringify({ html: '' }) }), activity_id: e.target.value || null }))}>
+              <option value="">(Any activity)</option>
+              {activities.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
+            </select>
+          </div>
 
-              {/* Inspector moved above Toolbox — click an object to view/edit properties */}
-              {selectedBlock && (
-                <div className="mt-3 p-2 border rounded bg-white text-xs">
-                  <div className="font-medium mb-1">Selected Block</div>
-                  {selectedBlock.type === 'placeholder' ? (
-                    <>
-                      <div className="mb-2 text-xs text-gray-600">Editing placeholder. You can change its label or metadata.</div>
-                      <div className="mb-2">
-                        <label className="block text-xs text-gray-500">Label</label>
-                        <input dir="ltr" className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.label) || ''} onChange={e => setBlockEditHtml(e.target.value)} />
-                      </div>
-                      <div className="mb-2">
-                        <label className="block text-xs text-gray-500">Question ID</label>
-                        <input className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.qid) || ''} readOnly />
-                      </div>
-                      <div className="flex gap-2 justify-end">
-                        <button className="p-1 border rounded text-xs" onClick={() => { setSelectedBlock(null); }}>Close</button>
-                        <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
+          {/* Inspector moved above Toolbox — click an object to view/edit properties */}
+          {selectedBlock && (
+            <div className="mt-3 p-2 border rounded bg-white text-xs">
+              <div className="font-medium mb-1">Selected Block</div>
+              {selectedBlock.type === 'placeholder' ? (
+                <>
+                  <div className="mb-2 text-xs text-gray-600">Editing placeholder. You can change its label or metadata.</div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Label</label>
+                    <input dir="ltr" className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.label) || ''} onChange={e => setBlockEditHtml(e.target.value)} />
+                  </div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Question ID</label>
+                    <input className="w-full border p-1 text-sm" value={(selectedBlock.meta && selectedBlock.meta.qid) || ''} readOnly />
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button className="p-1 border rounded text-xs" onClick={() => { setSelectedBlock(null); }}>Close</button>
+                    <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
+                      try {
+                        const tplObj = getTplObj(editing.template_json);
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(tplObj.html || '', 'text/html');
+                        const qid = selectedBlock.meta && selectedBlock.meta.qid;
+                        let el = qid ? doc.querySelector(`span.tpl-placeholder[data-qid="${qid}"]`) : null;
+                        if (!el) {
+                          const label = (selectedBlock.meta && selectedBlock.meta.label) || '';
+                          el = Array.from(doc.querySelectorAll('span.tpl-placeholder')).find(s => s.textContent === label) as HTMLElement | undefined || null;
+                        }
+                        if (el) {
+                          const newLabel = blockEditHtml || (selectedBlock.meta && selectedBlock.meta.label) || el.textContent || '';
+                          el.textContent = newLabel;
+                          el.setAttribute('data-label', newLabel);
+                          tplObj.html = doc.body ? doc.body.innerHTML : tplObj.html;
+                          setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
+                          setSelectedBlock({ ...selectedBlock, html: el.outerHTML, meta: { ...(selectedBlock.meta || {}), label: newLabel } });
+                        }
+                      } catch (e) { console.error('Failed to update placeholder', e); }
+                    }}>Save</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="mb-2 text-xs text-gray-600">Edit HTML / position for the selected positioned block.</div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Left (px)</label>
+                    <input type="number" className="w-full border p-1 text-sm" value={String(blockEditLeft)} onChange={e => setBlockEditLeft(e.target.value)} />
+                  </div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Top (px)</label>
+                    <input type="number" className="w-full border p-1 text-sm" value={String(blockEditTop)} onChange={e => setBlockEditTop(e.target.value)} />
+                  </div>
+                  <div className="mb-2">
+                    <label className="block text-xs text-gray-500">Inner HTML</label>
+                    <div className="w-full border p-1 bg-white">
+                      <WysiwygEditor value={blockEditHtml || ''} onChange={v => setBlockEditHtml(v)} />
+                    </div>
+                  </div>
+                  <div className="flex gap-2 justify-end items-center">
+                    <div className="flex items-center gap-1 mr-1">
+                      <button title="Send backward" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.sendBackward?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>◀</button>
+                      <button title="Bring forward" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.bringForward?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>▶</button>
+                      <button title="Send to back" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.sendToBack?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>⤓</button>
+                      <button title="Bring to front" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.bringToFront?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>⤒</button>
+                    </div>
+                    <button className="p-1 border rounded text-xs" onClick={() => {
+                      if (!selectedBlock) return;
+                      setConfirmState({
+                        open: true, message: 'Remove this block?', onConfirm: () => {
                           try {
-                            const tplObj = getTplObj(editing.template_json);
-                            const parser = new DOMParser();
-                            const doc = parser.parseFromString(tplObj.html || '', 'text/html');
-                            const qid = selectedBlock.meta && selectedBlock.meta.qid;
-                            let el = qid ? doc.querySelector(`span.tpl-placeholder[data-qid="${qid}"]`) : null;
-                            if (!el) {
-                              const label = (selectedBlock.meta && selectedBlock.meta.label) || '';
-                              el = Array.from(doc.querySelectorAll('span.tpl-placeholder')).find(s => s.textContent === label) as HTMLElement | undefined || null;
-                            }
-                            if (el) {
-                              const newLabel = blockEditHtml || (selectedBlock.meta && selectedBlock.meta.label) || el.textContent || '';
-                              el.textContent = newLabel;
-                              el.setAttribute('data-label', newLabel);
-                              tplObj.html = doc.body ? doc.body.innerHTML : tplObj.html;
-                              setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
-                              setSelectedBlock({ ...selectedBlock, html: el.outerHTML, meta: { ...(selectedBlock.meta || {}), label: newLabel } });
-                            }
-                          } catch (e) { console.error('Failed to update placeholder', e); }
-                        }}>Save</button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="mb-2 text-xs text-gray-600">Edit HTML / position for the selected positioned block.</div>
-                      <div className="mb-2">
-                        <label className="block text-xs text-gray-500">Left (px)</label>
-                        <input type="number" className="w-full border p-1 text-sm" value={String(blockEditLeft)} onChange={e => setBlockEditLeft(e.target.value)} />
-                      </div>
-                      <div className="mb-2">
-                        <label className="block text-xs text-gray-500">Top (px)</label>
-                        <input type="number" className="w-full border p-1 text-sm" value={String(blockEditTop)} onChange={e => setBlockEditTop(e.target.value)} />
-                      </div>
-                      <div className="mb-2">
-                        <label className="block text-xs text-gray-500">Inner HTML</label>
-                        <textarea dir="ltr" className="w-full border p-1 text-sm" rows={3} value={blockEditHtml} onChange={e => setBlockEditHtml(e.target.value)} />
-                      </div>
-                      <div className="flex gap-2 justify-end">
-                        <button className="p-1 border rounded text-xs" onClick={() => {
-                          if (!selectedBlock) return;
-                          setConfirmState({
-                            open: true, message: 'Remove this block?', onConfirm: () => {
-                              try {
-                                const tplObj = getTplObj(editing?.template_json);
-                                const parser = new DOMParser();
-                                const doc = parser.parseFromString(tplObj.html || '', 'text/html');
-                                const el = doc.querySelector(`div.tpl-block[data-block-id="${selectedBlock.id}"]`);
-                                if (el) el.remove();
-                                tplObj.html = doc.body ? doc.body.innerHTML : tplObj.html;
-                                setEditing({ ...editing, template_json: JSON.stringify(tplObj) });
-                                setSelectedBlock(null);
-                                setToasts(t => [...t, { id: Date.now(), text: 'Block removed' }]);
-                              } catch (e) { console.error(e); setToasts(t => [...t, { id: Date.now(), text: 'Failed to remove block' }]); }
-                              setConfirmState({ open: false, message: '' });
-                            }
-                          });
-                        }}>Remove</button>
-                        <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
-                          if (!selectedBlock) return;
-                          applyBlockUpdate(selectedBlock.id, { left: Number(blockEditLeft || 0), top: Number(blockEditTop || 0), html: blockEditHtml });
-                          setSelectedBlock({ ...selectedBlock, left: Number(blockEditLeft || 0), top: Number(blockEditTop || 0), html: blockEditHtml });
-                        }}>Save</button>
-                      </div>
-                    </>
-                  )}
-                </div>
+                            try { (canvasRef.current as any)?.deleteBlock?.(selectedBlock.id); } catch (e) { console.error('canvas delete failed', e); }
+                            setSelectedBlock(null);
+                            setToasts(t => [...t, { id: Date.now(), text: 'Block removed' }]);
+                          } catch (e) { console.error(e); setToasts(t => [...t, { id: Date.now(), text: 'Failed to remove block' }]); }
+                          setConfirmState({ open: false, message: '' });
+                        }
+                      });
+                    }}>Remove</button>
+                    <button className="p-1 bg-primary-600 text-white rounded text-xs" onClick={() => {
+                      if (!selectedBlock) return;
+                      const leftNum = Number(blockEditLeft || 0);
+                      const topNum = Number(blockEditTop || 0);
+                      // Update block on canvas with immediate emit change — the parent onChange handler will
+                      // automatically persist both html and blocks to template_json when it receives the immediate update
+                      try {
+                        (canvasRef.current as any)?.updateBlock?.(selectedBlock.id, { left: leftNum, top: topNum, html: blockEditHtml });
+                      } catch (e) { console.error('Failed to update block on canvas', e); }
+                      // Update local selectedBlock state so inspector reflects the change
+                      setSelectedBlock({ ...selectedBlock, left: leftNum, top: topNum, html: blockEditHtml });
+                    }}>Save</button>
+                  </div>
+                </>
               )}
-
-              <details className="mb-2 p-2 border rounded bg-gray-50">
-                <summary className="cursor-pointer font-medium">Toolbox</summary>
-                <div className="mt-2 grid grid-cols-1 gap-2">
-                  <div>
-                    <label className="block text-xs text-gray-500">Rich Text Editor</label>
-                    <select className="mt-1 block w-full border rounded p-2 text-sm" value={richTextMode} onChange={e => { setRichTextMode(e.target.value as any); try { localStorage.setItem('reportBuilderRichTextMode', e.target.value); } catch (err) { } }}>
-                      <option value="wysiwyg">TinyMCE / WYSIWYG</option>
-                      <option value="builtin">Built-in RichTextEditor</option>
-                      <option value="none">Disable rich text</option>
-                    </select>
-                    <div className="mt-2 text-xs text-gray-500 flex items-center gap-2"><input id="disableRT" type="checkbox" checked={disableRichText} onChange={e => { setDisableRichText(e.target.checked); try { localStorage.setItem('reportBuilderDisableRichText', e.target.checked ? '1' : '0'); } catch (err) { } }} /> <label htmlFor="disableRT">Disable rich text entirely</label></div>
-                  </div>
-                  <button className="w-full p-2 border rounded text-sm text-left" onClick={() => { if (disableRichText || richTextMode === 'none') { setComposeHtml('<div><p>New text</p></div>'); setComposeOpen(true); } else { setComposeHtml(''); setComposeOpen(true); } }}>Insert Text</button>
-                  <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertBlock?.()}>Insert Block</button>
-                  <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertPlaceholder?.()}>Insert Placeholder</button>
-                  <div className="flex gap-2">
-                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => fileInputRef.current?.click()}>Insert Image (upload)</button>
-                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.insertImageUrl?.()}>Insert Image (URL)</button>
-                  </div>
-                  <div className="flex gap-2 mt-2">
-                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => { try { canvasRef.current?.undo?.(); } catch (e) { document.execCommand && document.execCommand('undo'); } }}>Undo</button>
-                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => { try { canvasRef.current?.redo?.(); } catch (e) { document.execCommand && document.execCommand('redo'); } }}>Redo</button>
-                  </div>
-                  <div className="flex gap-2">
-                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomIn?.()}>Zoom +</button>
-                    <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomOut?.()}>Zoom -</button>
-                  </div>
-                </div>
-              </details>
-            </>
+            </div>
           )}
+
+          <details className="mb-2 p-2 border rounded bg-gray-50">
+            <summary className="cursor-pointer font-medium">Toolbox</summary>
+            <div className="mt-2 grid grid-cols-1 gap-2">
+              <div>
+                <label className="block text-xs text-gray-500">Rich Text Editor</label>
+                <select className="mt-1 block w-full border rounded p-2 text-sm" value={richTextMode} onChange={e => { setRichTextMode(e.target.value as any); try { localStorage.setItem('reportBuilderRichTextMode', e.target.value); } catch (err) { } }}>
+                  <option value="wysiwyg">TinyMCE / WYSIWYG</option>
+                  <option value="builtin">Built-in RichTextEditor</option>
+                  <option value="none">Disable rich text</option>
+                </select>
+                <div className="mt-2 text-xs text-gray-500 flex items-center gap-2"><input id="disableRT" type="checkbox" checked={disableRichText} onChange={e => { setDisableRichText(e.target.checked); try { localStorage.setItem('reportBuilderDisableRichText', e.target.checked ? '1' : '0'); } catch (err) { } }} /> <label htmlFor="disableRT">Disable rich text entirely</label></div>
+              </div>
+              <button className="w-full p-2 border rounded text-sm text-left" onClick={() => { if (disableRichText || richTextMode === 'none') { setComposeHtml('<div><p>New text</p></div>'); setComposeOpen(true); } else { setComposeHtml(''); setComposeOpen(true); } }}>Insert Text</button>
+              <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertBlock?.()}>Insert Block</button>
+              <button className="w-full p-2 border rounded text-sm text-left" onClick={() => canvasRef.current?.insertPlaceholder?.()}>Insert Placeholder</button>
+              <div className="flex gap-2">
+                <button className="flex-1 p-2 border rounded text-sm" onClick={() => fileInputRef.current?.click()}>Insert Image (upload)</button>
+                <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.insertImageUrl?.()}>Insert Image (URL)</button>
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button className="flex-1 p-2 border rounded text-sm" onClick={() => { try { canvasRef.current?.undo?.(); } catch (e) { document.execCommand && document.execCommand('undo'); } }}>Undo</button>
+                <button className="flex-1 p-2 border rounded text-sm" onClick={() => { try { canvasRef.current?.redo?.(); } catch (e) { document.execCommand && document.execCommand('redo'); } }}>Redo</button>
+              </div>
+              <div className="flex gap-2">
+                <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomIn?.()}>Zoom +</button>
+                <button className="flex-1 p-2 border rounded text-sm" onClick={() => canvasRef.current?.zoomOut?.()}>Zoom -</button>
+              </div>
+            </div>
+          </details>
 
 
 
@@ -844,12 +1019,66 @@ const ReportBuilderPage: React.FC = () => {
         </div>
       </Modal>
 
-      <Modal isOpen={isPreviewOpen} onClose={() => { setIsPreviewOpen(false); setEditing(null); }} title={`Preview Template ${editing?.name || ''}`} size="xl">
+      <Modal isOpen={isPreviewOpen} onClose={() => { setIsPreviewOpen(false); setEditing(null); setBuildUrl(null); }} title={`Preview Template ${editing?.name || ''}`} size="xl">
         <div className="prose max-w-full">
           {editing && (() => {
             try {
               const tplObj = getTplObj(editing.template_json);
               let tplHtml = tplObj.html || '';
+              // if we have a server-built URL, show it (PDF inline or download link for other formats)
+              if (buildUrl) {
+                // compute paper size in px to display exact paper area scaled
+                const paperMm: Record<string, { w: number; h: number }> = { A4: { w: 210, h: 297 }, Letter: { w: 216, h: 279 }, A3: { w: 297, h: 420 } };
+                const mm = paperMm[tplObj.paperSize] || paperMm['A4'];
+                const physW = tplObj.orientation === 'landscape' ? mm.h : mm.w;
+                const physH = tplObj.orientation === 'landscape' ? mm.w : mm.h;
+                const pxPerMm = 96 / 25.4;
+                const widthPx = Math.round(physW * pxPerMm);
+                const heightPx = Math.round(physH * pxPerMm);
+                let scale = 1;
+                if (typeof window !== 'undefined') {
+                  const maxW = Math.min((window.innerWidth || 1200) * 0.75, 1100);
+                  const maxH = Math.min((window.innerHeight || 800) * 0.8, 1400);
+                  scale = Math.min(1, maxW / widthPx, maxH / heightPx);
+                }
+                if ((buildFormat || 'pdf') === 'pdf') {
+                  return (
+                    <div style={{ display: 'flex', justifyContent: 'center' }}>
+                      <div style={{ border: '1px solid #ddd', padding: 8, background: '#fff' }}>
+                        <div style={{ width: Math.round(widthPx * scale), height: Math.round(heightPx * scale), overflow: 'hidden', transform: `scale(${scale})`, transformOrigin: 'top left', position: 'relative' }}>
+                          {/* loading overlay while server builds or iframe is loading */}
+                          {(building || iframeLoading) && (
+                            <div style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.85)', zIndex: 50 }}>
+                              <div className="flex flex-col items-center gap-2">
+                                <div className="w-8 h-8 border-4 border-t-primary-600 rounded-full animate-spin" style={{ borderColor: '#e5e7eb', borderTopColor: '#2563eb' }} />
+                                <div className="text-sm text-gray-700">Loading PDF…</div>
+                              </div>
+                            </div>
+                          )}
+                          <iframe title="template-preview-built" src={buildUrl || ''} onLoad={() => { try { setIframeLoading(false); } catch (e) { } }} style={{ width: widthPx + 'px', height: heightPx + 'px', border: 0 }} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+                // DOCX/XLSX embed via Office Online viewer (note: requires public access to the file URL)
+                if ((buildFormat || '').toLowerCase() === 'docx' || (buildFormat || '').toLowerCase() === 'xlsx') {
+                  try {
+                    const base = getApiBase() || '';
+                    const absolute = `${base}${buildUrl}`;
+                    const officeUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(absolute)}`;
+                    return <div style={{ width: '100%', height: 700 }}><iframe title="office-preview" src={officeUrl} style={{ width: '100%', height: '100%', border: 0 }} /></div>;
+                  } catch (e) {
+                    return <div className="p-4"><a href={buildUrl || ''} target="_blank" rel="noreferrer" className="p-2 bg-primary-600 text-white rounded inline-block">Download {(buildFormat || 'file').toUpperCase()}</a></div>;
+                  }
+                }
+                // image inline preview
+                if ((buildFormat || '').toLowerCase() === 'image') {
+                  return <div style={{ display: 'flex', justifyContent: 'center' }}><img src={buildUrl || ''} style={{ maxWidth: '100%', maxHeight: '80vh' }} alt="preview" /></div>;
+                }
+                // other formats: provide download link
+                return <div className="p-4"><a href={buildUrl || ''} target="_blank" rel="noreferrer" className="p-2 bg-primary-600 text-white rounded inline-block">Download {(buildFormat || 'file').toUpperCase()}</a></div>;
+              }
 
               // Build lookup maps for questions and answers
               const qMap: Record<string, any> = {};

@@ -21,6 +21,7 @@ const ReportViewPage: React.FC = () => {
   const [powerbiConfig, setPowerbiConfig] = useState<any>(null);
   const [builtTemplate, setBuiltTemplate] = useState<any>(null);
   const [powerbiModalOpen, setPowerbiModalOpen] = useState(false);
+  const [paperPreviewOpen, setPaperPreviewOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [reviewContent, setReviewContent] = useState<string>(report?.reviewersReport || '');
@@ -115,7 +116,7 @@ const ReportViewPage: React.FC = () => {
         if (docs.ok) setUploadedDocs(await docs.json() || []);
         // fetch activity title
         try {
-            const actRes = await apiFetch(`/api/activities/${jr.activity_id}`, { credentials: 'include' });
+          const actRes = await apiFetch(`/api/activities/${jr.activity_id}`, { credentials: 'include' });
           if (actRes.ok) {
             const act = await actRes.json(); setActivityTitle(act.title || act.activityTitle || act.name || null);
           }
@@ -141,6 +142,12 @@ const ReportViewPage: React.FC = () => {
   // sync review modal default values when report loads
   useEffect(() => {
     if (!report) return;
+    try {
+      // don't overwrite content if user is actively editing the review (caret inside editor)
+      const active = document.activeElement as HTMLElement | null;
+      const inEditor = active && (active.closest ? (active.closest('.richtext-editor') || active.closest('#review-editor')) : false);
+      if (inEditor) return;
+    } catch (e) { }
     setReviewContent(report.reviewersReport || report.reviewers_report || '');
     setReviewScore(report.overallScore ?? report.overall_score ?? null);
     setReviewStatus(report.status || null);
@@ -159,6 +166,28 @@ const ReportViewPage: React.FC = () => {
       // open a new tab/window — the server will return application/pdf or text/html
       window.open(url, '_blank');
     } catch (e) { console.error('Open PDF endpoint failed', e); alert('Failed to open PDF'); }
+  };
+
+  const handlePreviewPdf = async () => {
+    try {
+      const base = getApiBase();
+      const url = base ? `${base}/api/reports/${report.id}/pdf?template=1` : `/api/reports/${report.id}/pdf?template=1`;
+      window.open(url, '_blank');
+    } catch (e) { console.error('Open PDF preview failed', e); alert('Failed to open PDF preview'); }
+  };
+
+  const getPaperDimensions = (tplObj: any) => {
+    // returns { widthMm, heightMm }
+    const map: Record<string, { w: number; h: number }> = {
+      'A4': { w: 210, h: 297 },
+      'A3': { w: 297, h: 420 },
+      'Letter': { w: 215.9, h: 279.4 }
+    };
+    const paper = (tplObj?.paperSize || tplObj?.paper || 'A4');
+    const orient = (tplObj?.orientation || tplObj?.orient || 'portrait');
+    const dims = map[paper] || map['A4'];
+    if (orient === 'landscape') return { widthMm: dims.h, heightMm: dims.w };
+    return { widthMm: dims.w, heightMm: dims.h };
   };
 
   const handleEmail = () => {
@@ -201,28 +230,74 @@ const ReportViewPage: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold">{activityTitle ? `${activityTitle} — Report ${report.id}` : `Report ${report.id}`}</h1>
           <p className="text-sm text-gray-500">Submitted: {new Date(report.submission_date).toLocaleString()}</p>
-          <Button onClick={handlePrintFormatted}>Download PDF</Button>
-          <Button variant="secondary" onClick={handleEmail}>Forward via Email</Button>
+          <div className="inline-flex items-center gap-2">
+            <Button onClick={handlePrintFormatted}>Download PDF</Button>
+            <Button variant="secondary" onClick={handlePreviewPdf}>Preview PDF</Button>
+            {builtTemplate && (
+              <Button
+                variant="secondary"
+                onClick={() => setPaperPreviewOpen(true)}
+                title="Open the built report template with this report's answers"
+              >
+                {(() => {
+                  // Extract template name from builtTemplate
+                  if (builtTemplate.name) return builtTemplate.name;
+                  if (typeof builtTemplate.template_json === 'string') {
+                    try {
+                      const parsed = JSON.parse(builtTemplate.template_json);
+                      return parsed.name || 'View Report';
+                    } catch (e) {
+                      return 'View Report';
+                    }
+                  }
+                  return builtTemplate.template_json?.name || 'View Report';
+                })()}
+              </Button>
+            )}
+            <Button variant="secondary" onClick={handleEmail}>Forward via Email</Button>
+          </div>
           <Button variant="secondary" onClick={() => navigate(`/activities/${report.activity_id}/followups?reportId=${report.id}`)}>Edit Followups</Button>
           <div className="inline-flex items-center gap-2">
             {report?.status !== 'Completed' && (
               <Button onClick={() => setReviewModalOpen(true)}>Add / Edit Review</Button>
             )}
             {builtTemplate && (
-              <Button onClick={() => {
-                // Open built report in the format selected in the template. Use server exporters where available.
-                const tplObj = (typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {});
-                const fmt = (tplObj.displayFormat || 'pdf').toString().toLowerCase();
-                const base = getApiBase();
-                const baseUrl = base || '';
-                let url = '';
-                if (fmt === 'pdf') url = `${baseUrl}/api/reports/${report.id}/pdf?template=1`;
-                else if (fmt === 'docx') url = `${baseUrl}/api/reports/${report.id}/docx?template=1`;
-                else if (fmt === 'xlsx') url = `${baseUrl}/api/reports/${report.id}/xlsx?template=1`;
-                else if (fmt === 'image') url = `${baseUrl}/api/reports/${report.id}/image?template=1`;
-                else url = `${baseUrl}/api/reports/${report.id}/pdf?template=1`;
-                // open in a new tab/window; server will respond with appropriate content-disposition
-                try { window.open(url, '_blank'); } catch (e) { window.location.href = url; }
+              <Button onClick={async () => {
+                try {
+                  const tplObj = (typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {});
+                  const fmt = (tplObj.displayFormat || 'pdf').toString().toLowerCase();
+                  const base = getApiBase();
+                  const baseUrl = base || '';
+                  let url = '';
+                  if (fmt === 'pdf') url = `${baseUrl}/api/reports/${report.id}/pdf?template=1`;
+                  else if (fmt === 'docx') url = `${baseUrl}/api/reports/${report.id}/docx?template=1`;
+                  else if (fmt === 'xlsx') url = `${baseUrl}/api/reports/${report.id}/xlsx?template=1`;
+                  else if (fmt === 'image') url = `${baseUrl}/api/reports/${report.id}/image?template=1`;
+                  else url = `${baseUrl}/api/reports/${report.id}/pdf?template=1`;
+
+                  // derive a user-friendly filename from template settings if provided
+                  const filenameFormat = tplObj.filenameFormat || tplObj.fileName || tplObj.nameFormat || builtTemplate.name || `report_${report.id}`;
+                  const interpolate = (str: string) => {
+                    return String(str || '').replace(/\{\{\s*activity_title\s*\}\}/gi, activityTitle || '')
+                      .replace(/\{\{\s*report_id\s*\}\}/gi, String(report.id || ''))
+                      .replace(/\{\{\s*submission_date\s*\}\}/gi, String(report.submission_date || '')).replace(/[^a-zA-Z0-9-_\. ]/g, '_');
+                  };
+                  const filename = interpolate(filenameFormat) + (fmt === 'pdf' ? '.pdf' : fmt === 'docx' ? '.docx' : fmt === 'xlsx' ? '.xlsx' : fmt === 'image' ? '.png' : '.pdf');
+
+                  // attempt to fetch and download with a controlled filename
+                  const resp = await fetch(url, { credentials: 'include' });
+                  if (!resp.ok) { window.open(url, '_blank'); return; }
+                  const blob = await resp.blob();
+                  const blobUrl = window.URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = blobUrl;
+                  a.download = filename;
+                  document.body.appendChild(a);
+                  a.click();
+                  setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(blobUrl); }, 500);
+                } catch (e) {
+                  try { const tplObj = (typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {}); const fmt = (tplObj.displayFormat || 'pdf').toString().toLowerCase(); const base = getApiBase(); const baseUrl = base || ''; let url = fmt === 'docx' ? `${baseUrl}/api/reports/${report.id}/docx?template=1` : fmt === 'xlsx' ? `${baseUrl}/api/reports/${report.id}/xlsx?template=1` : `${baseUrl}/api/reports/${report.id}/pdf?template=1`; window.open(url, '_blank'); } catch (err) { console.error(err); }
+                }
               }}>{`Download: ${builtTemplate.name || 'Built Report'}`}</Button>
             )}
           </div>
@@ -281,11 +356,12 @@ const ReportViewPage: React.FC = () => {
         <h2 className="text-lg font-semibold mb-2">Submitted Answers</h2>
         {/* DataTable with column-level filter */}
         {(() => {
-            const columns = [
-              { key: 'page', label: 'Page' },
-              { key: 'section', label: 'Section' },
-              { key: 'question', label: 'Question' },
-              { key: 'answer', label: 'Answer', render: (row: any) => {
+          const columns = [
+            { key: 'page', label: 'Page' },
+            { key: 'section', label: 'Section' },
+            { key: 'question', label: 'Question' },
+            {
+              key: 'answer', label: 'Answer', render: (row: any) => {
                 // row._raw contains the original answer object
                 const a = row._raw;
                 if (!a) return '—';
@@ -321,40 +397,76 @@ const ReportViewPage: React.FC = () => {
                 if (v && typeof v === 'object') return <pre className="whitespace-pre-wrap max-w-xs text-sm">{JSON.stringify(v)}</pre>;
                 if (isString && String(v).length > 200) return <div className="max-w-lg text-sm">{String(v).slice(0, 200)}…</div>;
                 return String(v ?? '—');
-              } },
-              { key: 'reviewers_comment', label: 'Reviewer Comment' },
-              { key: 'quality_improvement_followup', label: 'Followup' },
-            ];
-            // Build a quick lookup map for questions by several possible keys
-            const qMap: Record<string, any> = {};
-            for (const q of questions) {
-              try {
-                if (q && (q.id !== undefined)) qMap[String(q.id)] = q;
-                if (q && (q.qid !== undefined)) qMap[String(q.qid)] = q;
-                if (q && (q.question_id !== undefined)) qMap[String(q.question_id)] = q;
-              } catch (e) { /* ignore malformed question */ }
-            }
+              }
+            },
+            { key: 'reviewers_comment', label: 'Reviewer Comment' },
+            { key: 'quality_improvement_followup', label: 'Followup' },
+          ];
+          // Build a quick lookup map for questions by several possible keys
+          const qMap: Record<string, any> = {};
+          for (const q of questions) {
+            try {
+              if (q && (q.id !== undefined)) qMap[String(q.id)] = q;
+              if (q && (q.qid !== undefined)) qMap[String(q.qid)] = q;
+              if (q && (q.question_id !== undefined)) qMap[String(q.question_id)] = q;
+            } catch (e) { /* ignore malformed question */ }
+          }
 
-            const data = answers.map(a => {
-              const q = qMap[String(a.question_id)] || questions.find((x: any) => String(x.id) === String(a.question_id) || String(x.qid) === String(a.question_id) || String(x.question_id) === String(a.question_id)) || {};
-              const questionText = q.questionText || q.question_text || q.text || q.label || String(a.question_id);
-              return {
-                page: q.pageName || q.page_name || '',
-                section: q.sectionName || q.section_name || '',
-                question: questionText,
-                answer: typeof a.answer_value === 'object' ? JSON.stringify(a.answer_value) : String(a.answer_value),
-                _raw: a,
-                reviewers_comment: a.reviewers_comment || '—',
-                quality_improvement_followup: a.quality_improvement_followup || '—',
-              };
-            });
+          const data = answers.map(a => {
+            const q = qMap[String(a.question_id)] || questions.find((x: any) => String(x.id) === String(a.question_id) || String(x.qid) === String(a.question_id) || String(x.question_id) === String(a.question_id)) || {};
+            const questionText = q.questionText || q.question_text || q.text || q.label || String(a.question_id);
+            return {
+              page: q.pageName || q.page_name || '',
+              section: q.sectionName || q.section_name || '',
+              question: questionText,
+              answer: typeof a.answer_value === 'object' ? JSON.stringify(a.answer_value) : String(a.answer_value),
+              _raw: a,
+              reviewers_comment: a.reviewers_comment || '—',
+              quality_improvement_followup: a.quality_improvement_followup || '—',
+            };
+          });
           return <DataTable columns={columns} data={data} />;
         })()}
       </Card>
 
       <div className="mt-6">
         <ConversationPanel context={{ report, answers, uploadedDocs }} scope={`report:${report.id}`} />
-      </div>      
+      </div>
+
+      {/* Paper preview modal for built template HTML */}
+      <Modal
+        isOpen={!!paperPreviewOpen}
+        onClose={() => setPaperPreviewOpen(false)}
+        title={builtTemplate ? `${builtTemplate.name || 'Report'} — Report ${report.id}` : `Report ${report.id}`}
+        size="xl"
+      >
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <div style={{ background: '#f3f4f6', padding: 16, maxWidth: '95%', overflow: 'auto' }}>
+            {builtTemplate ? (() => {
+              // Prefer showing the actual generated PDF inside an iframe so preview matches printed output.
+              const base = getApiBase();
+              const url = base ? `${base}/api/reports/${report.id}/pdf?template=1` : `/api/reports/${report.id}/pdf?template=1`;
+              // As a graceful fallback (if PDF endpoint is unavailable), also parse template HTML
+              const tplObj = (typeof builtTemplate.template_json === 'string') ? JSON.parse(builtTemplate.template_json || '{}') : (builtTemplate.template_json || {});
+              const html = tplObj.html || builtTemplate.html || '';
+              const dims = getPaperDimensions(tplObj);
+              const widthMm = dims.widthMm; const heightMm = dims.heightMm;
+              return (
+                <div style={{ background: '#ffffff', boxShadow: '0 1px 4px rgba(0,0,0,0.08)', padding: 12 }}>
+                  <div style={{ width: '100%', height: '80vh' }}>
+                    <iframe src={url} title={`report-pdf-${report.id}`} style={{ width: '100%', height: '100%', border: 'none' }} />
+                  </div>
+                  {(!html || String(html).trim() === '') ? null : (
+                    <div className="mt-4" style={{ width: `${widthMm}mm`, height: `${heightMm}mm`, overflow: 'auto', direction: 'ltr' }}>
+                      <div dangerouslySetInnerHTML={{ __html: html }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })() : <div className="text-sm text-gray-500">No built template available to preview.</div>}
+          </div>
+        </div>
+      </Modal>
 
       {/* Power BI Settings Modal (configuration) */}
       <Modal isOpen={!!powerbiModalOpen} onClose={() => setPowerbiModalOpen(false)} title={`Power BI Settings — Report ${report.id}`} size="lg" footer={(
@@ -368,15 +480,15 @@ const ReportViewPage: React.FC = () => {
       )}>
         <div className="space-y-4">
           <label className="block text-sm font-medium">Power BI Link / Embed</label>
-          <textarea className="w-full border rounded p-2" rows={4} value={powerbiConfig?.powerbi_link || ''} onChange={e => setPowerbiConfig(prev => ({ ...(prev||{}), powerbi_link: e.target.value }))} />
+          <textarea className="w-full border rounded p-2" rows={4} value={powerbiConfig?.powerbi_link || ''} onChange={e => setPowerbiConfig(prev => ({ ...(prev || {}), powerbi_link: e.target.value }))} />
           <div className="grid grid-cols-2 gap-2">
-            <select className="border p-2 rounded" value={powerbiConfig?.link_type || ''} onChange={e => setPowerbiConfig(prev => ({ ...(prev||{}), link_type: e.target.value }))}>
+            <select className="border p-2 rounded" value={powerbiConfig?.link_type || ''} onChange={e => setPowerbiConfig(prev => ({ ...(prev || {}), link_type: e.target.value }))}>
               <option value="">(Select type)</option>
               <option value="embed">Embed</option>
               <option value="iframe">Iframe</option>
               <option value="link">Link</option>
             </select>
-            <select className="border p-2 rounded" value={powerbiConfig?.mode || 'disabled'} onChange={e => setPowerbiConfig(prev => ({ ...(prev||{}), mode: e.target.value }))}>
+            <select className="border p-2 rounded" value={powerbiConfig?.mode || 'disabled'} onChange={e => setPowerbiConfig(prev => ({ ...(prev || {}), mode: e.target.value }))}>
               <option value="disabled">Disabled</option>
               <option value="enabled">Enabled</option>
             </select>
@@ -384,17 +496,17 @@ const ReportViewPage: React.FC = () => {
         </div>
       </Modal>
 
-          {/* Image lightbox modal for attachments */}
-          <Modal isOpen={!!imageModalOpen} onClose={() => { setImageModalOpen(false); setImageModalUrl(null); }} title="Attachment Preview" size="lg" footer={(
-            <div className="flex justify-end">
-              <a href={imageModalUrl || '#'} target="_blank" rel="noreferrer"><Button variant="secondary">Open in new tab</Button></a>
-              <Button onClick={() => { setImageModalOpen(false); setImageModalUrl(null); }}>Close</Button>
-            </div>
-          )}>
-            <div className="w-full flex justify-center">
-              {imageModalUrl ? <img src={imageModalUrl} alt="attachment" style={{ maxWidth: '100%', maxHeight: '70vh' }} /> : <div>No image</div>}
-            </div>
-          </Modal>
+      {/* Image lightbox modal for attachments */}
+      <Modal isOpen={!!imageModalOpen} onClose={() => { setImageModalOpen(false); setImageModalUrl(null); }} title="Attachment Preview" size="lg" footer={(
+        <div className="flex justify-end">
+          <a href={imageModalUrl || '#'} target="_blank" rel="noreferrer"><Button variant="secondary">Open in new tab</Button></a>
+          <Button onClick={() => { setImageModalOpen(false); setImageModalUrl(null); }}>Close</Button>
+        </div>
+      )}>
+        <div className="w-full flex justify-center">
+          {imageModalUrl ? <img src={imageModalUrl} alt="attachment" style={{ maxWidth: '100%', maxHeight: '70vh' }} /> : <div>No image</div>}
+        </div>
+      </Modal>
 
       <Card>
         <div className="flex justify-between items-center">
@@ -557,7 +669,7 @@ const ReportViewPage: React.FC = () => {
                   }} />
                 </label>
                 <div className="flex-1">
-                  <input placeholder="Paste a YouTube or embed URL here" className="w-full border rounded p-2" value={String((powerbiConfig && powerbiConfig._lastVideoUrl) || '')} onChange={e => setPowerbiConfig(prev => ({ ...(prev||{}), _lastVideoUrl: e.target.value }))} />
+                  <input placeholder="Paste a YouTube or embed URL here" className="w-full border rounded p-2" value={String((powerbiConfig && powerbiConfig._lastVideoUrl) || '')} onChange={e => setPowerbiConfig(prev => ({ ...(prev || {}), _lastVideoUrl: e.target.value }))} />
                 </div>
                 <Button onClick={() => {
                   const v = powerbiConfig?._lastVideoUrl;

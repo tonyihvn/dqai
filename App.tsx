@@ -18,6 +18,7 @@ import SettingsPage from './pages/SettingsPage';
 import ProfilePage from './pages/ProfilePage';
 import DocsPage from './pages/DocsPage';
 import { DataProvider, useMockData } from './hooks/useMockData';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useMockData();
@@ -70,9 +71,11 @@ const App: React.FC = () => {
   // Materialize removed: no longer needed
   return (
     <DataProvider>
-      <HashRouter>
-        <AppRoutes />
-      </HashRouter>
+      <ErrorBoundary>
+        <HashRouter>
+          <AppRoutes />
+        </HashRouter>
+      </ErrorBoundary>
     </DataProvider>
   );
 };

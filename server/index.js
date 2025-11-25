@@ -9,6 +9,7 @@ import path from 'path';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
+import puppeteer from 'puppeteer';
 dotenv.config();
 
 const app = express();
@@ -33,6 +34,11 @@ app.use(
 const uploadsRoot = path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
 app.use('/uploads', express.static(uploadsRoot));
+
+// Serve built report artifacts
+const buildsRoot = path.join(process.cwd(), 'public', 'builds');
+if (!fs.existsSync(buildsRoot)) fs.mkdirSync(buildsRoot, { recursive: true });
+app.use('/builds', express.static(buildsRoot));
 
 // Public endpoint to expose limited client environment (TinyMCE API key) to the frontend
 app.get('/api/client_env', async (req, res) => {
@@ -390,6 +396,128 @@ app.post('/api/execute_sql', async (req, res) => {
     }
 });
 
+// Simple report build endpoint: render provided HTML to PDF (via puppeteer) and return public URL
+app.post('/api/build_report', async (req, res) => {
+    try {
+        const { html, format = 'pdf', filename = 'report', paperSize = 'A4', orientation = 'portrait' } = req.body || {};
+        if (!html) return res.status(400).json({ error: 'Missing html in request' });
+
+        const fmt = String((format || 'pdf')).toLowerCase();
+        const safeName = String(filename).replace(/[^a-z0-9_\-]/gi, '_') || 'report';
+
+        // wrapper to ensure valid HTML
+        // If context provided, perform server-side substitution for placeholders (safe fallback)
+        const substituteHtml = (rawHtml, ctx) => {
+            try {
+                let out = String(rawHtml || '');
+                const qMap = {};
+                const answersMap = {};
+                const uploaded = Array.isArray((ctx || {}).uploadedDocs) ? (ctx || {}).uploadedDocs : [];
+                if (Array.isArray((ctx || {}).questionsList)) {
+                    for (const q of (ctx || {}).questionsList) {
+                        try { if (q && q.id !== undefined) qMap[String(q.id)] = q; if (q && q.qid !== undefined) qMap[String(q.qid)] = q; if (q && q.question_id !== undefined) qMap[String(q.question_id)] = q; } catch (e) { }
+                    }
+                }
+                if (Array.isArray((ctx || {}).answersList)) {
+                    for (const a of (ctx || {}).answersList) {
+                        try { const qid = String(a.question_id || a.questionId || a.qid || ''); if (!qid) continue; if (!answersMap[qid]) { const val = (typeof a.answer_value === 'object') ? JSON.stringify(a.answer_value) : String(a.answer_value || ''); answersMap[qid] = val; } } catch (e) { }
+                    }
+                }
+                const escapeHtml = s => { if (s === null || s === undefined) return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+                out = out.replace(/\{\{question_(\w+)\}\}/gi, (m, qid) => { const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`; });
+                out = out.replace(/\{\{activity_([a-zA-Z0-9_]+)\}\}/gi, (m, field) => { try { const act = (ctx || {}).activityData || {}; const val = act ? (act[field] ?? act[field.toLowerCase()] ?? '') : ''; return escapeHtml(val); } catch (e) { return ''; } });
+                out = out.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m, qid) => { const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`; });
+                out = out.replace(/<div[^>]*data-upload-id=["']?(\d+)["']?[^>]*>[\s\S]*?<\/div>/gi, (m, id) => {
+                    try {
+                        const doc = uploaded.find(d => String(d.id) === String(id));
+                        if (!doc) return `<div>Uploaded table ${escapeHtml(id)} not found</div>`;
+                        const rows = Array.isArray(doc.file_content) ? doc.file_content : (Array.isArray(doc.dataset_data) ? doc.dataset_data : []);
+                        if (!rows || rows.length === 0) return '<div>No table data</div>';
+                        const keys = Object.keys(rows[0] || {});
+                        let htmlTbl = '<div class="uploaded-table-wrapper"><table style="border-collapse: collapse; width:100%;"><thead><tr>';
+                        for (const k of keys) htmlTbl += `<th style="border:1px solid #ddd;padding:6px;background:#f7f7f7;text-align:left">${escapeHtml(k)}</th>`;
+                        htmlTbl += '</tr></thead><tbody>';
+                        for (const r of rows) { htmlTbl += '<tr>'; for (const k of keys) { const val = r && typeof r === 'object' && (r[k] !== undefined && r[k] !== null) ? String(r[k]) : ''; htmlTbl += `<td style="border:1px solid #ddd;padding:6px">${escapeHtml(val)}</td>`; } htmlTbl += '</tr>'; }
+                        htmlTbl += '</tbody></table></div>';
+                        return htmlTbl;
+                    } catch (e) { return `<div>Failed to render uploaded table ${id}</div>`; }
+                });
+                return out;
+            } catch (e) { return rawHtml || ''; }
+        };
+
+        const filled = (req.body && req.body.context) ? substituteHtml(html, req.body.context) : html;
+        const wrapperHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:0;background:#fff} table{page-break-inside:auto;} tr{page-break-inside:avoid; page-break-after:auto;} </style></head><body>${filled}</body></html>`;
+
+        if (fmt === 'pdf') {
+            // render PDF using puppeteer and respect paper size/orientation
+            const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+            const page = await browser.newPage();
+            await page.setContent(wrapperHtml, { waitUntil: 'networkidle0' });
+
+            const outName = `${safeName}_${Date.now()}.pdf`;
+            const outPath = path.join(buildsRoot, outName);
+            // puppeteer supports format and landscape
+            const pdfOptions = { path: outPath, printBackground: true, format: (paperSize || 'A4'), landscape: (orientation === 'landscape') };
+            await page.pdf(pdfOptions);
+            await browser.close();
+            const publicUrl = `/builds/${outName}`;
+            return res.json({ url: publicUrl, path: outPath });
+        }
+
+        if (fmt === 'docx') {
+            // convert HTML to docx using html-docx-js (requires installation)
+            let htmlDocx;
+            try { htmlDocx = await import('html-docx-js'); } catch (e) { return res.status(500).json({ error: 'Server missing dependency: html-docx-js. Run `npm install html-docx-js`' }); }
+            try {
+                const docxBuffer = htmlDocx && htmlDocx.asBlob ? Buffer.from(await htmlDocx.asBlob(wrapperHtml).arrayBuffer()) : Buffer.from(htmlDocx.asHTML ? htmlDocx.asHTML(wrapperHtml) : wrapperHtml);
+                const outName = `${safeName}_${Date.now()}.docx`;
+                const outPath = path.join(buildsRoot, outName);
+                fs.writeFileSync(outPath, docxBuffer);
+                const publicUrl = `/builds/${outName}`;
+                return res.json({ url: publicUrl, path: outPath });
+            } catch (e) {
+                console.error('docx conversion failed', e);
+                return res.status(500).json({ error: 'Failed to generate DOCX', details: String(e) });
+            }
+        }
+
+        if (fmt === 'xlsx') {
+            // Attempt to convert the first HTML table into an Excel workbook using ExcelJS
+            try {
+                const { JSDOM } = await import('jsdom');
+                const dom = new JSDOM(wrapperHtml);
+                const table = dom.window.document.querySelector('table');
+                const workbook = new ExcelJS.Workbook();
+                const sheet = workbook.addWorksheet('Sheet1');
+                if (table) {
+                    const rows = Array.from(table.querySelectorAll('tr'));
+                    for (const tr of rows) {
+                        const cells = Array.from(tr.querySelectorAll('th,td')).map(c => c.textContent || '');
+                        sheet.addRow(cells);
+                    }
+                } else {
+                    // no table found - write the HTML as a single cell
+                    sheet.addRow([dom.window.document.body.textContent || '']);
+                }
+                const outName = `${safeName}_${Date.now()}.xlsx`;
+                const outPath = path.join(buildsRoot, outName);
+                await workbook.xlsx.writeFile(outPath);
+                const publicUrl = `/builds/${outName}`;
+                return res.json({ url: publicUrl, path: outPath });
+            } catch (e) {
+                console.error('xlsx conversion failed', e);
+                return res.status(500).json({ error: 'Failed to generate XLSX', details: String(e) });
+            }
+        }
+
+        return res.status(400).json({ error: 'Unsupported format' });
+    } catch (e) {
+        console.error('build_report failed', e);
+        try { return res.status(500).json({ error: String(e) }); } catch (err) { return res.status(500).end(); }
+    }
+});
+
 // ...existing middleware registered earlier
 
 // Database Connection
@@ -527,7 +655,7 @@ async function initDb() {
             created_by INTEGER,
             created_at TIMESTAMP DEFAULT NOW()
         )`
-        ,`CREATE TABLE IF NOT EXISTS dqai_reports_powerbi (
+        , `CREATE TABLE IF NOT EXISTS dqai_reports_powerbi (
             id SERIAL PRIMARY KEY,
             activity_reports_id INTEGER REFERENCES dqai_activity_reports(id) ON DELETE CASCADE,
             powerbi_link TEXT,
@@ -536,7 +664,7 @@ async function initDb() {
             created_by INTEGER,
             created_at TIMESTAMP DEFAULT NOW()
         )`
-        ,`CREATE TABLE IF NOT EXISTS dqai_report_templates (
+        , `CREATE TABLE IF NOT EXISTS dqai_report_templates (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             activity_id INTEGER REFERENCES dqai_activities(id) ON DELETE CASCADE,
@@ -3082,7 +3210,7 @@ app.get('/api/reports/:id/xlsx', async (req, res) => {
             const sheetName = (doc.filename || `uploaded_${doc.id}`).slice(0, 31);
             const sheet = workbook.addWorksheet(sheetName);
             if (rows.length === 0) {
-                sheet.addRow([ 'No data' ]);
+                sheet.addRow(['No data']);
             } else {
                 const cols = Object.keys(rows[0] || {});
                 sheet.columns = cols.map(c => ({ header: c, key: c }));
@@ -3303,37 +3431,37 @@ app.post('/api/review_uploads', async (req, res) => {
     }
 });
 
-    // Accept base64 media uploads for template assets (header/footer/watermark).
-    // Public endpoint that does not require a reportId. Saves files under /uploads/templates and returns a public URL.
-    app.post('/api/template_uploads', async (req, res) => {
+// Accept base64 media uploads for template assets (header/footer/watermark).
+// Public endpoint that does not require a reportId. Saves files under /uploads/templates and returns a public URL.
+app.post('/api/template_uploads', async (req, res) => {
+    try {
+        const { filename, contentBase64, mimeType } = req.body || {};
+        if (!filename || !contentBase64) return res.status(400).send('Missing parameters');
+        const folder = path.join(uploadsRoot, 'templates');
+        if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+        const ts = Date.now();
+        const ext = path.extname(filename) || '';
+        const baseName = path.basename(filename, ext).replace(/[^a-zA-Z0-9-_\.]/g, '_');
+        const savedName = `${ts}_${baseName}${ext}`;
+        const filePath = path.join(folder, savedName);
+        let base64 = contentBase64;
+        const comma = base64.indexOf(',');
+        if (comma !== -1) base64 = base64.slice(comma + 1);
+        const buf = Buffer.from(base64, 'base64');
+        fs.writeFileSync(filePath, buf);
+        const publicUrl = `${req.protocol}://${req.get('host')}/uploads/templates/${encodeURIComponent(savedName)}`;
+        // Persist a record in dqai_uploaded_docs for discoverability
         try {
-            const { filename, contentBase64, mimeType } = req.body || {};
-            if (!filename || !contentBase64) return res.status(400).send('Missing parameters');
-            const folder = path.join(uploadsRoot, 'templates');
-            if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
-            const ts = Date.now();
-            const ext = path.extname(filename) || '';
-            const baseName = path.basename(filename, ext).replace(/[^a-zA-Z0-9-_\.]/g, '_');
-            const savedName = `${ts}_${baseName}${ext}`;
-            const filePath = path.join(folder, savedName);
-            let base64 = contentBase64;
-            const comma = base64.indexOf(',');
-            if (comma !== -1) base64 = base64.slice(comma + 1);
-            const buf = Buffer.from(base64, 'base64');
-            fs.writeFileSync(filePath, buf);
-            const publicUrl = `${req.protocol}://${req.get('host')}/uploads/templates/${encodeURIComponent(savedName)}`;
-            // Persist a record in dqai_uploaded_docs for discoverability
-            try {
-                await pool.query('INSERT INTO dqai_uploaded_docs (activity_id, facility_id, user_id, uploaded_by, report_id, file_content, filename) VALUES ($1,$2,$3,$4,$5,$6,$7)', [null, null, null, req.session && req.session.userId ? req.session.userId : null, null, JSON.stringify({ url: publicUrl, mimeType: mimeType || null }), filename]);
-            } catch (e) {
-                console.warn('Failed to insert template_uploads metadata into dqai_uploaded_docs', e && e.message ? e.message : e);
-            }
-            res.json({ url: publicUrl, path: filePath });
+            await pool.query('INSERT INTO dqai_uploaded_docs (activity_id, facility_id, user_id, uploaded_by, report_id, file_content, filename) VALUES ($1,$2,$3,$4,$5,$6,$7)', [null, null, null, req.session && req.session.userId ? req.session.userId : null, null, JSON.stringify({ url: publicUrl, mimeType: mimeType || null }), filename]);
         } catch (e) {
-            console.error('template_uploads error', e);
-            res.status(500).send(e.message);
+            console.warn('Failed to insert template_uploads metadata into dqai_uploaded_docs', e && e.message ? e.message : e);
         }
-    });
+        res.json({ url: publicUrl, path: filePath });
+    } catch (e) {
+        console.error('template_uploads error', e);
+        res.status(500).send(e.message);
+    }
+});
 
 // Delete a report and its associated uploaded docs and media files
 app.delete('/api/reports/:id', async (req, res) => {

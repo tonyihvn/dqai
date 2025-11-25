@@ -14,6 +14,7 @@
 }
 
 @layer components {
+
   .app-sidebar,
   .app-sidebar-inner {
     background-color: var(--sidebar-bg, #ffffff) !important;
@@ -51,6 +52,18 @@
     background-image: none !important;
   }
 
+  /* Force left-to-right input direction for editors and textareas to avoid accidental RTL behavior */
+  textarea,
+  input[type="text"],
+  input[type="search"],
+  .richtext-editor [contenteditable],
+  .canvas-editor [contenteditable],
+  .tox,
+  .tox * {
+    direction: ltr !important;
+    unicode-bidi: embed !important;
+  }
+
   .btn-primary,
   .text-primary {
     background-color: var(--primary-color) !important;
@@ -79,5 +92,3 @@
     color: var(--nav-text-color, #111827) !important;
   }
 }
-
-

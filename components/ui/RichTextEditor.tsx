@@ -9,7 +9,10 @@ const RichTextEditor: React.FC<Props> = ({ value = '', onChange }) => {
     const ref = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
-        if (ref.current && value !== ref.current.innerHTML) {
+        if (!ref.current) return;
+        // Avoid clobbering the user's caret while they are actively editing (focused element)
+        if (document.activeElement === ref.current) return;
+        if (value !== ref.current.innerHTML) {
             ref.current.innerHTML = value || '';
         }
     }, [value]);
@@ -44,9 +47,10 @@ const RichTextEditor: React.FC<Props> = ({ value = '', onChange }) => {
             <div
                 ref={ref}
                 contentEditable
+                dir="ltr"
                 onInput={() => onChange && onChange(ref.current?.innerHTML || '')}
                 className="min-h-[120px] p-2 border rounded prose max-w-full"
-                style={{ outline: 'none', overflow: 'auto' }}
+                style={{ outline: 'none', overflow: 'auto', unicodeBidi: 'embed' }}
             />
         </div>
     );

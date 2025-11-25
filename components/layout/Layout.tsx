@@ -11,8 +11,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // Compute left offset for content based on sidebar width. When collapsed we remove the left margin so main can expand.
-  const contentMarginClass = collapsed ? 'md:ml-0' : 'md:ml-64';
+  // Compute left offset for content based on sidebar width. Sidebar is fixed, so we always need a margin offset.
+  // When collapsed, sidebar is 80px (md:w-20), otherwise 256px (md:w-64)
+  const contentMarginClass = collapsed ? 'md:ml-20' : 'md:ml-64';
 
   return (
     <div className="flex h-screen bg-gray-100">

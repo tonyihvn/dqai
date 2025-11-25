@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import CanvasEditor from './CanvasEditor';
+import RichTextEditor from './RichTextEditor';
 
 type Props = {
   value?: string;
@@ -61,33 +61,59 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
     return () => { mounted = false; };
   }, []);
 
-  // If TinyMCE isn't available or we didn't resolve a client API key, fall back to the in-repo CanvasEditor to avoid runtime validation errors.
-  if (!EditorComp || tinyKey === null) {
-    return <CanvasEditor value={value} onChange={onChange} />;
+  // If TinyMCE isn't available or we didn't resolve a client API key, fall back to the in-repo RichTextEditor to avoid runtime validation errors.
+  // Only initialize TinyMCE when we have both the Editor component and a non-empty API key
+  // EditorComp is TinyMCE's Editor component
+  // Ensure the editor content follows `value` prop updates. TinyMCE's Editor instance
+  // exists in `editorRef.current` after `onInit`. When `value` changes we should
+  // update the editor only if its current content differs to avoid clobbering user edits.
+  useEffect(() => {
+    try {
+      const ed = editorRef.current;
+      if (!ed) return;
+      // TinyMCE editor exposes `getContent`/`setContent`.
+      if (typeof ed.getContent === 'function' && typeof ed.setContent === 'function') {
+        const curr = String(ed.getContent({ format: 'html' }) || '');
+        const incoming = String(value || '');
+        if (curr !== incoming) {
+          try { ed.setContent(incoming); } catch (e) { /* ignore setContent errors */ }
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }, [value]);
+
+  if (!EditorComp || !tinyKey) {
+    return <RichTextEditor value={value} onChange={onChange} />;
   }
 
-  // EditorComp is TinyMCE's Editor component
+  // return TinyMCE Editor component
   return (
     <EditorComp
       apiKey={tinyKey || ''}
-      onInit={(evt: any, editor: any) => { editorRef.current = editor; }}
-      initialValue={value || ''}
+      onInit={(evt: any, editor: any) => {
+        editorRef.current = editor;
+        // Set initial content only once on init
+        if (value) editor.setContent(value);
+      }}
       init={{
         height: 400,
         menubar: false,
         plugins: [
-          'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'print', 'preview', 'anchor',
+          'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'anchor',
           'searchreplace', 'visualblocks', 'code', 'fullscreen',
-          'insertdatetime', 'media', 'table', 'paste', 'help', 'wordcount', 'directionality'
+          'insertdatetime', 'media', 'table', 'help', 'wordcount', 'directionality'
         ],
-        // Ensure requested tools are visible: table, media, charmap, image, and list controls
-        toolbar: 'undo redo | table media charmap image | formatselect | bold italic backcolor | alignleft aligncenter alignright alignjustify | bullist numlist outdent indent | removeformat | ltr rtl | help',
-        // Force left-to-right layout inside the editor content to avoid accidental RTL rendering
-        content_style: 'body { font-family:Arial,sans-serif; font-size:14px; direction:ltr; unicode-bidi:embed; }',
+        toolbar:
+          'undo redo | table media charmap image | formatselect | bold italic backcolor | ' +
+          'alignleft aligncenter alignright alignjustify | bullist numlist outdent indent | ' +
+          'removeformat | ltr rtl | help',
+        content_style:
+          'body { font-family:Arial,sans-serif; font-size:14px; direction:ltr; unicode-bidi:embed; }'
       }}
-      onEditorChange={(c: string) => onChange && onChange(c)}
+      onEditorChange={(c: string) => onChange?.(c)}
     />
   );
+
 };
 
 export default WysiwygEditor;
