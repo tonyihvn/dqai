@@ -266,7 +266,10 @@ const ReportBuilderPage: React.FC = () => {
   const [composeHtml, setComposeHtml] = useState<string>('');
 
   const save = async () => {
-    if (!editing || !editing.name) return alert('Please provide a name');
+    if (!editing || !editing.name) {
+      try { await import('../components/ui/swal').then(m => m.error('Missing Name', 'Please provide a name for the template.')); } catch (e) { }
+      return;
+    }
     try {
       let parsed: any = {};
       try { parsed = typeof editing.template_json === 'string' ? JSON.parse(editing.template_json) : (editing.template_json || {}); } catch (e) { parsed = {}; }
@@ -283,11 +286,19 @@ const ReportBuilderPage: React.FC = () => {
         assets: parsed.assets || null
       };
       const res = await apiFetch('/api/admin/report_templates', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (!res.ok) { const txt = await res.text().catch(() => ''); alert('Save failed: ' + txt); return; }
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        try { await import('../components/ui/swal').then(m => m.error('Save Failed', txt || 'Could not save template.')); } catch (e) { }
+        return;
+      }
       await loadTemplates();
       setEditing(null);
       setPanelShown(false);
-    } catch (e) { console.error(e); alert('Save failed'); }
+      try { await import('../components/ui/swal').then(m => m.success('Saved!', 'Template saved successfully.')); } catch (e) { }
+    } catch (e) {
+      console.error(e);
+      try { await import('../components/ui/swal').then(m => m.error('Save Failed', String(e && e.message ? e.message : 'Could not save template.'))); } catch (err) { }
+    }
   };
 
 
@@ -430,11 +441,14 @@ const ReportBuilderPage: React.FC = () => {
                         }
 
                         const payload = { html: filledHtml, format: fmt, filename: t.name || 'report', paperSize: tplObj.paperSize || 'A4', orientation: tplObj.orientation || 'portrait', context: { activityData, questionsList, answersList, uploadedDocs } };
+                        try { console.debug('[ReportBuilder] preview payload', { format: fmt, htmlLength: String(filledHtml || '').length, filename: payload.filename, paperSize: payload.paperSize, orientation: payload.orientation }); } catch (e) { }
 
                         let builtUrl: string | null = null;
                         const res = await apiFetch('/api/build_report', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                        try { console.debug('[ReportBuilder] preview response status', res.status); } catch (e) { }
                         if (res.ok) {
                           const j = await res.json();
+                          try { console.debug('[ReportBuilder] preview response json', j); } catch (e) { }
                           const url = j.url || j.path || null;
                           if (url) { setBuildUrl(url); setBuildFormat(fmt); builtUrl = url; }
                           else { setToasts(ts => [...ts, { id: Date.now(), text: 'Build succeeded but server did not return a URL' }]); setIframeLoading(false); }
@@ -470,12 +484,14 @@ const ReportBuilderPage: React.FC = () => {
                         onChange={v => {
                           try {
                             // If CanvasEditor marked this update as immediate (insert/delete/convert), apply without debounce
+                            try { (window as any).__RB_TRACE__ = (window as any).__RB_TRACE__ || []; (window as any).__RB_TRACE__.push({ ts: Date.now(), type: 'incoming', payload: v }); } catch (e) { }
                             if (v && typeof v === 'object' && (v.immediate === true)) {
                               // Clear any pending debounced update — an earlier delayed change
                               // could later overwrite this immediate change and cause inserted
                               // items to disappear. Ensure immediate updates win.
                               try { if (canvasChangeTimerRef.current) { window.clearTimeout(canvasChangeTimerRef.current); canvasChangeTimerRef.current = null; } } catch (e) { }
                               try {
+                                try { console.debug('[ReportBuilder] immediate canvas update incoming', { htmlLen: String(v.html || '').length, blocks: (v.blocks || []).length }); } catch (e) { }
                                 const tplObj = getTplObj(editing.template_json);
                                 if (v && typeof v === 'object' && ('html' in v || 'blocks' in v)) {
                                   tplObj.html = v.html || tplObj.html || '';
@@ -492,6 +508,7 @@ const ReportBuilderPage: React.FC = () => {
                           try { if (canvasChangeTimerRef.current) window.clearTimeout(canvasChangeTimerRef.current); } catch (e) { }
                           canvasChangeTimerRef.current = window.setTimeout(() => {
                             try {
+                              try { console.debug('[ReportBuilder] debounced canvas update incoming', { htmlLen: String((v && (v.html || '')) || '').length, blocks: (v && v.blocks ? v.blocks.length : 0) }); } catch (e) { }
                               const tplObj = getTplObj(editing.template_json);
                               if (v && typeof v === 'object' && ('html' in v || 'blocks' in v)) {
                                 tplObj.html = v.html || tplObj.html || '';
@@ -636,6 +653,16 @@ const ReportBuilderPage: React.FC = () => {
               ) : (
                 <>
                   <div className="mb-2 text-xs text-gray-600">Edit HTML / position for the selected positioned block.</div>
+                  {/* show z-order position badge */}
+                  {(() => {
+                    try {
+                      const tplObj = getTplObj(editing?.template_json);
+                      const blocks = Array.isArray(tplObj.blocks) ? tplObj.blocks : [];
+                      const zPos = blocks.findIndex((b: any) => String(b.id) === String(selectedBlock?.id));
+                      if (zPos !== -1) return <div className="mb-2 text-xs text-gray-500">Z-index: <span className="inline-block bg-gray-100 px-2 py-0.5 rounded text-xs">{zPos}</span></div>;
+                    } catch (e) { }
+                    return null;
+                  })()}
                   <div className="mb-2">
                     <label className="block text-xs text-gray-500">Left (px)</label>
                     <input type="number" className="w-full border p-1 text-sm" value={String(blockEditLeft)} onChange={e => setBlockEditLeft(e.target.value)} />
@@ -652,10 +679,18 @@ const ReportBuilderPage: React.FC = () => {
                   </div>
                   <div className="flex gap-2 justify-end items-center">
                     <div className="flex items-center gap-1 mr-1">
-                      <button title="Send backward" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.sendBackward?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>◀</button>
-                      <button title="Bring forward" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.bringForward?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>▶</button>
-                      <button title="Send to back" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.sendToBack?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>⤓</button>
-                      <button title="Bring to front" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.bringToFront?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>⤒</button>
+                      <button title="Send backward" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.sendBackward?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M14 7l-5 5 5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      </button>
+                      <button title="Bring forward" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.bringForward?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M10 17l5-5-5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      </button>
+                      <button title="Send to back" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.sendToBack?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" /></svg>
+                      </button>
+                      <button title="Bring to front" className="p-1 border rounded text-xs" onClick={() => { try { canvasRef.current?.bringToFront?.(selectedBlock.id); setSelectedBlock(prev => prev ? { ...prev } : prev); } catch (e) { console.error(e); } }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 19V5M19 12H5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" /></svg>
+                      </button>
                     </div>
                     <button className="p-1 border rounded text-xs" onClick={() => {
                       if (!selectedBlock) return;

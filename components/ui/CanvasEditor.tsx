@@ -68,7 +68,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
     }
     // sync internalHtml to editable content (without blocks) but avoid forcing a render on every tiny input by only updating when explicitly requested
     try { setInternalHtml(editableHtml); } catch (e) { }
-    try { console.debug('[CanvasEditor] emitChange', { blocksCount: blocks.length, combinedLength: (combined || '').length }); } catch (e) { }
+    try { console.debug('[CanvasEditor] emitChange', { blocksCount: blocks.length, combinedLength: (combined || '').length, lockExpiresAt: localChangeLockRef.current }); } catch (e) { }
     // sanitize blocks before sending to parent (remove internal-only fields)
     const sanitize = (b: any) => {
       const out: any = {};
@@ -80,6 +80,14 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
     };
     const payload: any = { html: combined || '', blocks: JSON.parse(JSON.stringify((blocks || []).map(sanitize))) };
     if (opts && (opts as any).immediate) payload.immediate = true;
+    try { // push to global trace buffer for debugging reverts
+      try {
+        const w = (window as any);
+        w.__CANVAS_TRACE__ = w.__CANVAS_TRACE__ || [];
+        w.__CANVAS_TRACE__.push({ ts: Date.now(), type: 'emit', payload: payload, lock: localChangeLockRef.current });
+        if (w.__CANVAS_TRACE__.length > 200) w.__CANVAS_TRACE__.shift();
+      } catch (e) { /* ignore trace errors */ }
+    } catch (e) { }
     onChange && onChange(payload as any);
     // push snapshot to history (blocks + html) optionally
     if (opts && opts.pushHistory === false) return;
@@ -655,6 +663,26 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
     // wrap content in a non-Grammarly container where possible to avoid extension conflicts
     const wrappedHtml = `<div data-gramm="false">${htmlContent}</div>`;
     const b = { id, html: wrappedHtml, left, top, width: null, height: null, meta: {}, _localUpdatedAt: Date.now() };
+    // If inserting an element that exists inline in the editable region (e.g. pasted image), remove inline occurrences
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(wrappedHtml || '', 'text/html');
+      const img = doc.querySelector('img');
+      if (img && containerRef.current) {
+        const src = img.getAttribute('src');
+        if (src) {
+          try {
+            const imgs = Array.from(containerRef.current.querySelectorAll('img')) as HTMLImageElement[];
+            const inlineImgs = imgs.filter(i => String(i.getAttribute('src') || '') === String(src));
+            for (const ii of inlineImgs) {
+              try { ii.parentElement ? ii.parentElement.removeChild(ii) : (ii as any).remove?.(); } catch (e) { /* ignore */ }
+            }
+            // Refresh internalHtml to reflect removals
+            setInternalHtml(getEditableHtmlFromDom());
+          } catch (e) { /* ignore remove issues */ }
+        }
+      }
+    } catch (e) { /* ignore parse/remove errors */ }
     setBlocks(prev => { const next = [...prev, b]; return next; });
     // lock out incoming stale updates for a short while
     localChangeLockRef.current = Date.now() + 800;
@@ -1026,9 +1054,13 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
               {/* center red guide lines (vertical + horizontal) */}
               <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'rgba(220,38,38,0.85)', zIndex: 5, pointerEvents: 'none' }} />
               <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'rgba(220,38,38,0.85)', zIndex: 5, pointerEvents: 'none' }} />
+              {/* center red guide lines (vertical + horizontal) */}
+              <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'rgba(220,38,38,0.12)', zIndex: 0, pointerEvents: 'none' }} />
+              <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'rgba(220,38,38,0.12)', zIndex: 0, pointerEvents: 'none' }} />
+
               {/* positioned blocks */}
-              {blocks.map(b => {
-                const style: any = { position: 'absolute', left: b.left + 'px', top: b.top + 'px', cursor: 'move', border: selectedBlockId === b.id ? '1px solid #2563eb' : '1px dashed rgba(0,0,0,0.08)', padding: 4, background: '#fff' };
+              {blocks.map((b, idx) => {
+                const style: any = { position: 'absolute', left: b.left + 'px', top: b.top + 'px', cursor: 'move', border: selectedBlockId === b.id ? '1px solid #2563eb' : '1px dashed rgba(0,0,0,0.08)', padding: 4, background: '#fff', zIndex: 20 + idx };
                 if (b.width) style.width = (typeof b.width === 'number' ? `${b.width}px` : b.width);
                 if (b.height) style.height = (typeof b.height === 'number' ? `${b.height}px` : b.height);
                 return (
