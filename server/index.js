@@ -424,9 +424,9 @@ app.post('/api/build_report', async (req, res) => {
                     }
                 }
                 const escapeHtml = s => { if (s === null || s === undefined) return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
-                out = out.replace(/\{\{question_(\w+)\}\}/gi, (m, qid) => { const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`; });
+                out = out.replace(/\{\{question_(\w+)\}\}/gi, (m, qid) => { const ansRaw = answersMap[String(qid)] || ''; const ans = (ansRaw === null || ansRaw === undefined) ? '' : String(ansRaw); return `<div class="report-filled">${escapeHtml(ans)}</div>`; });
                 out = out.replace(/\{\{activity_([a-zA-Z0-9_]+)\}\}/gi, (m, field) => { try { const act = (ctx || {}).activityData || {}; const val = act ? (act[field] ?? act[field.toLowerCase()] ?? '') : ''; return escapeHtml(val); } catch (e) { return ''; } });
-                out = out.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m, qid) => { const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`; });
+                out = out.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m, qid) => { const ansRaw = answersMap[String(qid)] || ''; const ans = (ansRaw === null || ansRaw === undefined) ? '' : String(ansRaw); return `<div class="report-filled">${escapeHtml(ans)}</div>`; });
                 out = out.replace(/<div[^>]*data-upload-id=["']?(\d+)["']?[^>]*>[\s\S]*?<\/div>/gi, (m, id) => {
                     try {
                         const doc = uploaded.find(d => String(d.id) === String(id));
@@ -514,7 +514,22 @@ app.post('/api/build_report', async (req, res) => {
         };
 
         const filledProcessed = preprocessHtml(filled, fmt);
-        const wrapperHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:0;background:#fff} table{page-break-inside:auto;} tr{page-break-inside:avoid; page-break-after:auto;} </style></head><body>${filledProcessed}</body></html>`; if (fmt === 'pdf') {
+        const wrapperHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:0;background:#fff} table{page-break-inside:auto;} tr{page-break-inside:avoid; page-break-after:auto;} </style></head><body>${filledProcessed}</body></html>`;
+
+        // Determine if the HTML contains positioned layout blocks that require screenshot fallback
+        let hasTplBlocks = false;
+        try {
+            const { JSDOM } = await import('jsdom');
+            const domForBlocks = new JSDOM(wrapperHtml);
+            hasTplBlocks = Boolean(domForBlocks.window.document.querySelector('.tpl-block'));
+        } catch (e) {
+            // ignore if jsdom isn't available; hasTplBlocks remains false
+        }
+
+        // Normalize image-like formats so callers may request 'png' or 'image'
+        const isImageRequest = (fmt === 'image' || fmt === 'jpg' || fmt === 'jpeg' || fmt === 'png');
+
+        if (fmt === 'pdf') {
             // render PDF using puppeteer and respect paper size/orientation
             const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
             const page = await browser.newPage();
@@ -530,17 +545,20 @@ app.post('/api/build_report', async (req, res) => {
             return res.json({ url: publicUrl, path: outPath });
         }
 
-        if (fmt === 'image' || fmt === 'jpg' || fmt === 'jpeg') {
+        if (isImageRequest) {
             // render an image (JPG) of the page using puppeteer
             try {
                 const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
                 const page = await browser.newPage();
                 await page.setContent(wrapperHtml, { waitUntil: 'networkidle0' });
-
-                const outName = `${safeName}_${Date.now()}.jpg`;
+                const outName = `${safeName}_${Date.now()}.${(fmt === 'png' ? 'png' : 'jpg')}`;
                 const outPath = path.join(buildsRoot, outName);
-                // Screenshot with quality settings for JPG output
-                await page.screenshot({ path: outPath, fullPage: true, type: 'jpeg', quality: 90 });
+                // Screenshot with quality settings for JPG/PNG output
+                if (fmt === 'png') {
+                    await page.screenshot({ path: outPath, fullPage: true, type: 'png' });
+                } else {
+                    await page.screenshot({ path: outPath, fullPage: true, type: 'jpeg', quality: 90 });
+                }
                 await browser.close();
                 const publicUrl = `/builds/${outName}`;
                 console.debug(`[build_report] image (jpg) generated: ${outName}`);
@@ -552,16 +570,38 @@ app.post('/api/build_report', async (req, res) => {
         }
 
         if (fmt === 'docx') {
-            // convert HTML to docx using html-docx-js (requires installation)
+            // If template uses positioned layout blocks, render a screenshot and embed as an image in the DOCX
             let htmlDocx;
             try { htmlDocx = await import('html-docx-js'); } catch (e) { return res.status(500).json({ error: 'Server missing dependency: html-docx-js. Run `npm install html-docx-js`' }); }
             try {
-                const docxBuffer = htmlDocx && htmlDocx.asBlob ? Buffer.from(await htmlDocx.asBlob(wrapperHtml).arrayBuffer()) : Buffer.from(htmlDocx.asHTML ? htmlDocx.asHTML(wrapperHtml) : wrapperHtml);
-                const outName = `${safeName}_${Date.now()}.docx`;
-                const outPath = path.join(buildsRoot, outName);
-                fs.writeFileSync(outPath, docxBuffer);
-                const publicUrl = `/builds/${outName}`;
-                return res.json({ url: publicUrl, path: outPath });
+                if (hasTplBlocks) {
+                    // Render screenshot and embed as base64 image in a minimal HTML so html-docx-js will include it
+                    const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+                    const page = await browser.newPage();
+                    await page.setContent(wrapperHtml, { waitUntil: 'networkidle0' });
+                    const imgName = `${safeName}_${Date.now()}.jpg`;
+                    const imgPath = path.join(buildsRoot, imgName);
+                    await page.screenshot({ path: imgPath, fullPage: true, type: 'jpeg', quality: 90 });
+                    await browser.close();
+
+                    // read file and convert to base64
+                    const imgBuf = fs.readFileSync(imgPath);
+                    const b64 = imgBuf.toString('base64');
+                    const imgHtml = `<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:0;background:#fff;"><div><img src="data:image/jpeg;base64,${b64}" style="width:100%;height:auto;display:block"/></div></body></html>`;
+                    const docxBuffer = htmlDocx && htmlDocx.asBlob ? Buffer.from(await htmlDocx.asBlob(imgHtml).arrayBuffer()) : Buffer.from(htmlDocx.asHTML ? htmlDocx.asHTML(imgHtml) : imgHtml);
+                    const outName = `${safeName}_${Date.now()}.docx`;
+                    const outPath = path.join(buildsRoot, outName);
+                    fs.writeFileSync(outPath, docxBuffer);
+                    const publicUrl = `/builds/${outName}`;
+                    return res.json({ url: publicUrl, path: outPath });
+                } else {
+                    const docxBuffer = htmlDocx && htmlDocx.asBlob ? Buffer.from(await htmlDocx.asBlob(wrapperHtml).arrayBuffer()) : Buffer.from(htmlDocx.asHTML ? htmlDocx.asHTML(wrapperHtml) : wrapperHtml);
+                    const outName = `${safeName}_${Date.now()}.docx`;
+                    const outPath = path.join(buildsRoot, outName);
+                    fs.writeFileSync(outPath, docxBuffer);
+                    const publicUrl = `/builds/${outName}`;
+                    return res.json({ url: publicUrl, path: outPath });
+                }
             } catch (e) {
                 console.error('docx conversion failed', e);
                 return res.status(500).json({ error: 'Failed to generate DOCX', details: String(e) });
@@ -3053,12 +3093,9 @@ app.get('/api/reports/:id/pdf', async (req, res) => {
                     // perform placeholder substitution for question placeholders inserted by the canvas
                     // replace spans with data-qid attributes
                     tplHtml = tplHtml.replace(/<span[^>]*data-qid=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m, qid, inner) => {
-                        const q = qMap[String(qid)] || {};
-                        // try to extract data-label from the original tag
-                        const lblMatch = m.match(/data-label=["']?([^"'>]*)["']?/i);
-                        const label = (lblMatch && lblMatch[1]) ? lblMatch[1] : (q.question_text || q.questionText || String(qid));
-                        const answer = answersMap[String(qid)] || '';
-                        return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(answer)}</div>`;
+                        const answerRaw = answersMap[String(qid)] || '';
+                        const answer = (answerRaw === null || answerRaw === undefined) ? '' : String(answerRaw);
+                        return `<div class="report-filled">${escapeHtml(answer)}</div>`;
                     });
 
                     // replace uploaded table wrappers marked with data-upload-id and render full table if data exists

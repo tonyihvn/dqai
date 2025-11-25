@@ -410,7 +410,7 @@ const ReportBuilderPage: React.FC = () => {
                               const escapeHtml = (s: any) => { if (s === null || s === undefined) return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
 
                               out = out.replace(/\{\{question_(\w+)\}\}/gi, (m, qid) => {
-                                const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                                const ansRaw = answersMap[String(qid)] || ''; const ans = (ansRaw === null || ansRaw === undefined) ? '' : String(ansRaw); return `<div class="report-filled">${escapeHtml(ans)}</div>`;
                               });
 
                               out = out.replace(/\{\{activity_([a-zA-Z0-9_]+)\}\}/gi, (m, field) => {
@@ -418,7 +418,9 @@ const ReportBuilderPage: React.FC = () => {
                               });
 
                               out = out.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m, qid) => {
-                                const q = (questionsList || []).find(x => String(x.id) === String(qid) || String(x.qid) === String(qid) || String(x.question_id) === String(qid)) || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = (answersList || []).find(a => String(a.question_id || a.qid || a.questionId) === String(qid))?.answer_value || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                                const ansRaw = (answersList || []).find(a => String(a.question_id || a.qid || a.questionId) === String(qid))?.answer_value || '';
+                                const ans = (ansRaw === null || ansRaw === undefined) ? '' : (typeof ansRaw === 'object' ? JSON.stringify(ansRaw) : String(ansRaw));
+                                return `<div class="report-filled">${escapeHtml(ans)}</div>`;
                               });
 
                               out = out.replace(/<div[^>]*data-upload-id=["']?(\d+)["']?[^>]*>[\s\S]*?<\/div>/gi, (m, id) => {
@@ -1144,10 +1146,9 @@ const ReportBuilderPage: React.FC = () => {
 
                 // Replace moustache-style question placeholders like {{question_123}}
                 tplHtml = tplHtml.replace(/\{\{question_(\w+)\}\}/gi, (m, qid) => {
-                  const q = qMap[String(qid)] || {};
-                  const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`;
-                  const ans = answersMap[String(qid)] || '';
-                  return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                  const ansRaw = answersMap[String(qid)] || '';
+                  const ans = (ansRaw === null || ansRaw === undefined) ? '' : String(ansRaw);
+                  return `<div class="report-filled">${escapeHtml(ans)}</div>`;
                 });
 
                 // Replace activity-level placeholders like {{activity_title}} with values from the selected activity
@@ -1161,10 +1162,9 @@ const ReportBuilderPage: React.FC = () => {
 
                 // Replace inline spans with data-qid attributes (inserted by canvas editor)
                 tplHtml = tplHtml.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m, qid) => {
-                  const q = qMap[String(qid)] || {};
-                  const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`;
-                  const ans = answersMap[String(qid)] || '';
-                  return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                  const ansRaw = answersMap[String(qid)] || '';
+                  const ans = (ansRaw === null || ansRaw === undefined) ? '' : (typeof ansRaw === 'object' ? JSON.stringify(ansRaw) : String(ansRaw));
+                  return `<div class="report-filled">${escapeHtml(ans)}</div>`;
                 });
 
                 // Replace uploaded table placeholders (data-upload-id) with header+sample where possible

@@ -262,12 +262,14 @@ const ReportViewPage: React.FC = () => {
                       for (const a of answers || []) { try { const qid = String(a.question_id || a.questionId || a.qid || ''); if (!qid) continue; if (!answersMap[qid]) { const val = (typeof a.answer_value === 'object') ? JSON.stringify(a.answer_value) : String(a.answer_value || ''); answersMap[qid] = val; } } catch (e) { } }
                       const escapeHtml = (s: any) => { if (s === null || s === undefined) return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
 
-                      out = out.replace(/\{\{question_(\w+)\}\}/gi, (m: any, qid: any) => { const q = qMap[String(qid)] || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = answersMap[String(qid)] || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`; });
+                      out = out.replace(/\{\{question_(\w+)\}\}/gi, (m: any, qid: any) => { const ansRaw = answersMap[String(qid)] || ''; const ans = (ansRaw === null || ansRaw === undefined) ? '' : String(ansRaw); return `<div class="report-filled">${escapeHtml(ans)}</div>`; });
 
                       out = out.replace(/\{\{activity_([a-zA-Z0-9_]+)\}\}/gi, (m: any, field: any) => { try { if (!activityData) return ''; const val = activityData[field] ?? activityData[field.toLowerCase()] ?? ''; return escapeHtml(val); } catch (e) { return ''; } });
 
                       out = out.replace(/<span[^>]*data-qid=["']?(\w+)["']?[^>]*>([\s\S]*?)<\/span>/gi, (m: any, qid: any) => {
-                        const q = (questions || []).find(x => String(x.id) === String(qid) || String(x.qid) === String(qid) || String(x.question_id) === String(qid)) || {}; const label = q.question_text || q.questionText || q.field_name || q.fieldName || `Question ${qid}`; const ans = (answers || []).find(a => String(a.question_id || a.qid || a.questionId) === String(qid))?.answer_value || ''; return `<div class="report-filled"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(ans)}</div>`;
+                        const ansRaw = (answers || []).find(a => String(a.question_id || a.qid || a.questionId) === String(qid))?.answer_value || '';
+                        const ans = (ansRaw === null || ansRaw === undefined) ? '' : (typeof ansRaw === 'object' ? JSON.stringify(ansRaw) : String(ansRaw));
+                        return `<div class="report-filled">${escapeHtml(ans)}</div>`;
                       });
 
                       out = out.replace(/<div[^>]*data-upload-id=["']?(\d+)["']?[^>]*>[\s\S]*?<\/div>/gi, (m: any, id: any) => {
@@ -300,10 +302,27 @@ const ReportViewPage: React.FC = () => {
                   if (!url) { try { swalError('Build failed', 'Server did not return a URL'); } catch (e) { } return; }
                   // handle by format
                   if (fmt === 'pdf') {
-                    setPreviewUrl(url);
-                    setPreviewFormat('pdf');
-                    setBuiltTemplate(tpl);
-                    setPaperPreviewOpen(true);
+                    // Open the built PDF in a new blank window and embed an iframe so the browser renders it properly.
+                    try {
+                      const base = getApiBase();
+                      const fullUrl = url.startsWith('http') ? url : (base ? `${base}${url}` : url);
+                      const w = window.open('about:blank');
+                      if (w && w.document) {
+                        const title = (tpl && tpl.name) ? tpl.name : `Report ${report.id}`;
+                        const htmlDoc = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>html,body{height:100%;margin:0}iframe{border:none;height:100vh;width:100%}</style></head><body><iframe src="${fullUrl}"></iframe></body></html>`;
+                        w.document.write(htmlDoc);
+                        w.document.close();
+                      } else {
+                        // fallback
+                        const full = url.startsWith('http') ? url : ((getApiBase() || '') + url);
+                        window.open(full, '_blank');
+                      }
+                      setBuiltTemplate(tpl);
+                    } catch (e) {
+                      console.error('Failed to open PDF in new window', e);
+                      const full = url.startsWith('http') ? url : ((getApiBase() || '') + url);
+                      window.open(full, '_blank');
+                    }
                   } else if (fmt === 'image') {
                     // open lightbox with image
                     const imgUrl = url;

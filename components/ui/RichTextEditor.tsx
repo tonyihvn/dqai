@@ -12,10 +12,30 @@ const RichTextEditor: React.FC<Props> = ({ value = '', onChange }) => {
         if (!ref.current) return;
         // Avoid clobbering the user's caret while they are actively editing (focused element)
         if (document.activeElement === ref.current) return;
-        if (value !== ref.current.innerHTML) {
-            ref.current.innerHTML = value || '';
+        try {
+            if (value !== ref.current.innerHTML) {
+                ref.current.innerHTML = value || '';
+            }
+        } catch (e) {
+            // In some edge cases the ref may not be ready; try again on next frame
+            requestAnimationFrame(() => {
+                try { if (ref.current && value !== ref.current.innerHTML) ref.current.innerHTML = value || ''; } catch (err) { }
+            });
         }
     }, [value]);
+
+    // Ensure initial mount sets content once the div is available.
+    useEffect(() => {
+        if (!ref.current) return;
+        // If editor not focused, ensure initial content is populated.
+        if (document.activeElement !== ref.current && (ref.current.innerHTML || '') !== (value || '')) {
+            // Use a tiny delay to allow mount timing to settle
+            const t = setTimeout(() => {
+                try { if (ref.current) ref.current.innerHTML = value || ''; } catch (e) { }
+            }, 10);
+            return () => clearTimeout(t);
+        }
+    }, []);
 
     const exec = (cmd: string, val?: string) => {
         document.execCommand(cmd, false, val || undefined);
