@@ -494,7 +494,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         } else {
           // duplicate placeholder (inline) by inserting a copy at cursor
           const ph = selectedPlaceholderRef.current;
-            if (ph) {
+          if (ph) {
             try { insertHtmlAtCursor(ph.outerHTML); setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40); } catch (e) { }
           }
         }
@@ -587,9 +587,54 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
       if (blockEl) {
         const bid = blockEl.getAttribute('data-block-id');
         if (bid) {
+          // set selection state
           setSelectedBlockId(bid);
           const found = blocks.find(b => String(b.id) === String(bid));
           const obj = found ? { ...found } : { id: bid, html: blockEl.innerHTML, left: null, top: null, meta: {} };
+
+          // Small debug helper: when debugging is enabled, print stacking-context and overflow
+          try {
+            const debugEnabled = (typeof window !== 'undefined') && (
+              (window as any).__CANVAS_DEBUG_STACKING__ === true || (window as any).__CANVAS_DEBUG_STACKING__ === 'true' ||
+              ((import.meta as any) && (import.meta as any).env && (import.meta as any).env.VITE_CANVAS_DEBUG === 'true')
+            );
+            if (debugEnabled) {
+              const logElInfo = (el: HTMLElement | null, label: string) => {
+                if (!el) return;
+                try {
+                  console.groupCollapsed(`[CanvasEditor][StackDebug] ${label}: <${el.tagName.toLowerCase()}> ${el.id ? '#' + el.id : ''} ${el.className ? '.' + String(el.className).replace(/\s+/g, '.') : ''}`);
+                  let cur: HTMLElement | null = el;
+                  while (cur) {
+                    try {
+                      const cs = window.getComputedStyle(cur);
+                      const rect = cur.getBoundingClientRect ? cur.getBoundingClientRect() : { x: 0, y: 0, width: 0, height: 0 };
+                      console.debug({
+                        el: cur.tagName.toLowerCase(),
+                        id: cur.id || null,
+                        className: cur.className || null,
+                        position: cs.position,
+                        zIndex: cs.zIndex,
+                        transform: cs.transform,
+                        opacity: cs.opacity,
+                        overflow: cs.overflow,
+                        contain: cs.contain,
+                        willChange: cs.willChange,
+                        rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height }
+                      });
+                    } catch (e) { console.debug('[CanvasEditor][StackDebug] failed reading computed style for element', cur, e); }
+                    if (cur.parentElement && cur.parentElement !== document.documentElement) cur = cur.parentElement; else { if (cur !== document.body) cur = document.body; else cur = null; }
+                  }
+                  console.groupEnd();
+                } catch (e) { console.debug('[CanvasEditor][StackDebug] logging failed', e); }
+              };
+
+              try { logElInfo(blockEl as HTMLElement, 'Clicked tpl-block'); } catch (e) { console.debug(e); }
+              try { const insp = document.querySelector('.inspector-panel') as HTMLElement | null; if (insp) logElInfo(insp, 'Inspector panel (.inspector-panel)'); else console.debug('[CanvasEditor][StackDebug] .inspector-panel not found'); } catch (e) { console.debug(e); }
+              try { const canvasRoot = containerRef.current || (document.querySelector('.paper-root') as HTMLElement | null); if (canvasRoot) logElInfo(canvasRoot, 'Canvas root / paper-root'); } catch (e) { console.debug(e); }
+              try { const body = document.body; if (body) logElInfo(body, 'Document body'); } catch (e) { console.debug(e); }
+            }
+          } catch (e) { /* swallow debug errors */ }
+
           propsOnSelect && propsOnSelect(obj);
           return;
         }
@@ -943,7 +988,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         }
       } catch (e) { /* ignore */ }
       const newBlock = { id, html, left, top, width: w, height: h, meta: {}, _localUpdatedAt: Date.now() };
-        setBlocks(prev => {
+      setBlocks(prev => {
         const next = [...prev, newBlock];
         localChangeLockRef.current = Date.now() + 800;
         // start dragging slightly after state update so block exists in DOM
@@ -954,8 +999,8 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         }, 20);
         return next;
       });
-        // ensure parent saves this insertion as an action as well (in case setBlocks batching misses it)
-        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 60);
+      // ensure parent saves this insertion as an action as well (in case setBlocks batching misses it)
+      setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 60);
     } catch (e) { console.error('Failed to convert element to block', e); }
   };
 

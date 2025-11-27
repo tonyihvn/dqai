@@ -21,19 +21,38 @@ const PORT = Number(process.env.SERVER_PORT || process.env.PORT) || 3000;
 const allowPublicAdmin = (process.env.ALLOW_PUBLIC_ADMIN === 'true') || (process.env.NODE_ENV !== 'production');
 
 // Middleware - MUST be registered before route handlers so req.body is available
-// Accept localhost origins on any port for local development. Use a dynamic origin
-// function so the server echoes back the incoming origin (e.g., http://localhost:9090)
+// CORS handling: allow localhost and common local network origins during development.
+// In production, only allow explicitly configured hosts via `FRONTEND_HOSTS` or `FRONTEND_HOST`.
 const frontendPort = process.env.FRONTEND_PORT ? Number(process.env.FRONTEND_PORT) : undefined;
 app.use(cors({
     origin: (origin, callback) => {
-        // If no origin (e.g., server-to-server, curl), allow
+        // If no origin (server-to-server or curl), allow
         if (!origin) return callback(null, true);
         try {
             const u = new URL(origin);
-            // allow localhost / 127.0.0.1 origins (any port)
-            if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return callback(null, origin);
-        } catch (e) { /* fallthrough */ }
-        // fallback: deny
+            const hostname = u.hostname;
+
+            // Always allow localhost loopback
+            if (hostname === 'localhost' || hostname === '127.0.0.1') return callback(null, origin);
+
+            // In non-production (development/testing) allow private LAN IP ranges so
+            // frontend served on an internal address (e.g., http://172.16.x.x:9090)
+            // can call the backend without CORS blocking.
+            if (process.env.NODE_ENV !== 'production') {
+                // match 10.x.x.x, 192.168.x.x, and 172.16.0.0 - 172.31.255.255
+                if (/^(10|127)\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)) return callback(null, origin);
+                // support an explicit all-origins flag for development convenience
+                if (process.env.ALLOW_ALL_ORIGINS === 'true') return callback(null, origin);
+            }
+
+            // Allow explicitly configured frontend hosts (comma-separated list) in production
+            const allowedHosts = (process.env.FRONTEND_HOSTS || process.env.FRONTEND_HOST || '').split(',').map(s => s.trim()).filter(Boolean);
+            if (allowedHosts.length) {
+                if (allowedHosts.includes(origin) || allowedHosts.includes(hostname)) return callback(null, origin);
+            }
+        } catch (e) {
+            /* fallthrough - deny below */
+        }
         return callback(new Error('Not allowed by CORS'));
     },
     credentials: true

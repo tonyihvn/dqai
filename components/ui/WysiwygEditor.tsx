@@ -98,10 +98,17 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
         // Prevent parent containers from clipping TinyMCE popup/dropdowns
         try {
           const root = editor.getContainer && editor.getContainer();
-          if (root && root.parentElement) {
-            // allow dropdowns to render fully
-            root.parentElement.style.overflow = 'visible';
-            root.style.zIndex = '3000';
+          if (root) {
+            // ensure the editor and its parent containers allow overflow so popups aren't clipped
+            let p: HTMLElement | null = root as HTMLElement;
+            let depth = 0;
+            while (p && depth < 10) {
+              try { (p as HTMLElement).style.overflow = 'visible'; (p as HTMLElement).style.zIndex = '99999'; } catch (e) { }
+              p = (p.parentElement as HTMLElement | null);
+              depth++;
+            }
+            try { root.style.zIndex = '99999'; } catch (e) { }
+            try { document.body.style.overflow = 'visible'; } catch (e) { }
           }
         } catch (err) { /* ignore */ }
       }}
@@ -117,7 +124,7 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
         toolbar:
           'undo redo | fontselect fontsizeselect | bold italic underline | forecolor backcolor | lineheightfullscreen | alignleft aligncenter alignright | bullist numlist | table image media | link | code fullscreen',
         toolbar_mode: 'floating',
-        zIndex: 3000,
+        zIndex: 99999,
         // keep default content styling, but ensure popups are visible
         content_style:
           'body { font-family:Arial,sans-serif; font-size:14px; direction:ltr; unicode-bidi:embed; }'
