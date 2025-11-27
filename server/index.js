@@ -3207,7 +3207,7 @@ app.put('/api/activities/:id/form', async (req, res) => {
     } catch (e) { res.status(500).send(e.message); }
 });
 
-app.delete('/api/activities/:id', async (req, res) => {
+app.delete('/api/activities/:id', requireAdmin, async (req, res) => {
     try {
         await pool.query('DELETE FROM dqai_activities WHERE id = $1', [req.params.id]);
         res.sendStatus(200);
@@ -3222,7 +3222,7 @@ app.get('/api/facilities', async (req, res) => {
     } catch (e) { res.status(500).send(e.message); }
 });
 
-app.post('/api/facilities', async (req, res) => {
+app.post('/api/facilities', requireAdmin, async (req, res) => {
     const { name, state, lga, address, category, id } = req.body;
     try {
         if (id) {
@@ -3241,7 +3241,7 @@ app.post('/api/facilities', async (req, res) => {
     } catch (e) { res.status(500).send(e.message); }
 });
 
-app.delete('/api/facilities/:id', async (req, res) => {
+app.delete('/api/facilities/:id', requireAdmin, async (req, res) => {
     try {
         await pool.query('DELETE FROM dqai_facilities WHERE id = $1', [req.params.id]);
         res.sendStatus(200);
@@ -3278,12 +3278,83 @@ app.post('/api/users', async (req, res) => {
             }
         }
 
+        // helper: determine if actor is admin (available for create/update checks)
+        const actorId = req.session && req.session.userId ? req.session.userId : null;
+        const actorIsAdmin = async () => {
+            if (!actorId) return false;
+            try {
+                const r = await pool.query('SELECT role FROM dqai_users WHERE id = $1', [actorId]);
+                if (r.rows.length > 0 && (r.rows[0].role || '').toString().toLowerCase() === 'admin') return true;
+                const rr = await pool.query('SELECT r.name FROM dqai_user_roles ur JOIN dqai_roles r ON ur.role_id = r.id WHERE ur.user_id = $1', [actorId]);
+                for (const row of rr.rows) { if (row && row.name && row.name.toString().toLowerCase() === 'admin') return true; }
+            } catch (e) { /* ignore */ }
+            return false;
+        };
+
         if (id) {
-            const result = await pool.query(
-                'UPDATE dqai_users SET first_name=$1, last_name=$2, email=$3, role=$4, status=$5, password=$6, facility_id=$7, profile_image=$8 WHERE id=$9 RETURNING *',
-                [firstName, lastName, email, role, status, hashedPassword || null, facilityId || null, profileImage || null, id]
-            );
+            // fetch existing user for diff and existence check
+            const existingRes = await pool.query('SELECT * FROM dqai_users WHERE id = $1', [id]);
+            if (existingRes.rows.length === 0) return res.status(404).send('User not found');
+            const existing = existingRes.rows[0];
+
+            // If attempting to change role, ensure actor is admin
+            if (role !== undefined) {
+                const ok = await actorIsAdmin();
+                if (!ok) return res.status(403).json({ error: 'Forbidden - only admins can change roles' });
+            }
+
+            // Build dynamic update so we only change fields that are provided.
+            const updates = [];
+            const values = [];
+            let idx = 1;
+            if (firstName !== undefined) { updates.push(`first_name=$${idx++}`); values.push(firstName); }
+            if (lastName !== undefined) { updates.push(`last_name=$${idx++}`); values.push(lastName); }
+            if (email !== undefined) { updates.push(`email=$${idx++}`); values.push(email); }
+            if (status !== undefined) { updates.push(`status=$${idx++}`); values.push(status); }
+            if (facilityId !== undefined) {
+                // only admins may change facility assignment
+                const ok = await actorIsAdmin();
+                if (!ok) return res.status(403).json({ error: 'Forbidden - only admins can change facility assignment' });
+                updates.push(`facility_id=$${idx++}`); values.push(facilityId);
+            }
+            if (profileImage !== undefined) { updates.push(`profile_image=$${idx++}`); values.push(profileImage); }
+            // Only change role if explicitly provided (admin-checked above)
+            if (role !== undefined) { updates.push(`role=$${idx++}`); values.push(role); }
+            // Only change password if provided
+            if (password) { updates.push(`password=$${idx++}`); values.push(hashedPassword); }
+
+            if (updates.length === 0) {
+                const u = existing;
+                return res.json({ id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, status: u.status, profileImage: u.profile_image || null });
+            }
+
+            const sql = `UPDATE dqai_users SET ${updates.join(', ')} WHERE id=$${idx} RETURNING *`;
+            values.push(id);
+            const result = await pool.query(sql, values);
             const u = result.rows[0];
+
+            // audit: record what changed (omit sensitive values like password contents)
+            try {
+                await pool.query(`CREATE TABLE IF NOT EXISTS dqai_audit_events (
+                    id SERIAL PRIMARY KEY,
+                    actor_user_id INTEGER,
+                    target_user_id INTEGER,
+                    action TEXT,
+                    details JSONB,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )`);
+                const changes = {};
+                if (firstName !== undefined && existing.first_name !== firstName) changes.first_name = { before: existing.first_name, after: firstName };
+                if (lastName !== undefined && existing.last_name !== lastName) changes.last_name = { before: existing.last_name, after: lastName };
+                if (email !== undefined && existing.email !== email) changes.email = { before: existing.email, after: email };
+                if (status !== undefined && existing.status !== status) changes.status = { before: existing.status, after: status };
+                if (facilityId !== undefined && String(existing.facility_id) !== String(facilityId)) changes.facility_id = { before: existing.facility_id, after: facilityId };
+                if (profileImage !== undefined && existing.profile_image !== profileImage) changes.profile_image = { before: existing.profile_image, after: profileImage };
+                if (role !== undefined && existing.role !== role) changes.role = { before: existing.role, after: role };
+                if (password) changes.password_changed = true;
+                await pool.query('INSERT INTO dqai_audit_events (actor_user_id, target_user_id, action, details) VALUES ($1,$2,$3,$4)', [actorId || null, u.id, 'update', Object.keys(changes).length ? changes : { updated: true }]);
+            } catch (e) { console.error('Failed to write audit event for user update', e); }
+
             // send notification email if smtp configured
             try {
                 const sres = await pool.query("SELECT value FROM dqai_settings WHERE key = 'smtp'");
@@ -3296,7 +3367,7 @@ app.post('/api/users', async (req, res) => {
                         const toList = [u.email];
                         if (adminList) toList.push(adminList);
                         const subject = 'Account updated';
-                        const text = `Hello ${u.first_name || ''},\n\nYour account has been updated by an administrator. If you did not expect this, contact support.`;
+                        const text = `Hello ${u.first_name || ''},\n\nYour account has been updated. If you did not expect this, contact support.`;
                         await transporter.sendMail({ from: smtp.from || smtp.user || 'no-reply@example.com', to: toList.join(','), subject, text });
                     } catch (e) { console.error('Failed to send user-update email', e); }
                 }
@@ -3304,6 +3375,10 @@ app.post('/api/users', async (req, res) => {
 
             res.json({ id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, status: u.status, profileImage: u.profile_image || null });
         } else {
+            // only admins may create new users
+            const okCreate = await actorIsAdmin();
+            if (!okCreate) return res.status(403).json({ error: 'Forbidden - only admins can create users' });
+
             const result = await pool.query(
                 'INSERT INTO dqai_users (first_name, last_name, email, role, status, password, facility_id, profile_image) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
                 [firstName, lastName, email, role, status, hashedPassword || null, facilityId || null, profileImage || null]
@@ -3329,6 +3404,21 @@ app.post('/api/users', async (req, res) => {
                 }
             } catch (e) { console.error('Failed to load smtp settings for user-create notification', e); }
 
+            // audit: user created
+            try {
+                const actorId = req.session && req.session.userId ? req.session.userId : null;
+                await pool.query(`CREATE TABLE IF NOT EXISTS dqai_audit_events (
+                    id SERIAL PRIMARY KEY,
+                    actor_user_id INTEGER,
+                    target_user_id INTEGER,
+                    action TEXT,
+                    details JSONB,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )`);
+                const details = { created: true, role: u.role, email: u.email, provided_password: !!password };
+                await pool.query('INSERT INTO dqai_audit_events (actor_user_id, target_user_id, action, details) VALUES ($1,$2,$3,$4)', [actorId || null, u.id, 'create', details]);
+            } catch (e) { console.error('Failed to write audit event for user create', e); }
+
             res.json({ id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, status: u.status, profileImage: u.profile_image || null });
         }
     } catch (e) { console.error(e); res.status(500).send(e.message); }
@@ -3338,9 +3428,27 @@ app.post('/api/users', async (req, res) => {
 app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
     try {
         const id = req.params.id;
+        // fetch user for audit
+        const ures = await pool.query('SELECT * FROM dqai_users WHERE id = $1', [id]);
+        const target = ures.rows.length ? ures.rows[0] : null;
         // remove role assignments
         await pool.query('DELETE FROM dqai_user_roles WHERE user_id = $1', [id]);
         await pool.query('DELETE FROM dqai_users WHERE id = $1', [id]);
+        // audit deletion
+        try {
+            const actorId = req.session && req.session.userId ? req.session.userId : null;
+            await pool.query(`CREATE TABLE IF NOT EXISTS dqai_audit_events (
+                id SERIAL PRIMARY KEY,
+                actor_user_id INTEGER,
+                target_user_id INTEGER,
+                action TEXT,
+                details JSONB,
+                created_at TIMESTAMP DEFAULT NOW()
+            )`);
+            const details = { deleted: true, email: target ? target.email : null, role: target ? target.role : null };
+            await pool.query('INSERT INTO dqai_audit_events (actor_user_id, target_user_id, action, details) VALUES ($1,$2,$3,$4)', [actorId || null, id, 'delete', details]);
+        } catch (e) { console.error('Failed to write audit event for user delete', e); }
+
         res.json({ ok: true });
     } catch (e) { console.error('Failed to delete user', e); res.status(500).json({ error: 'Failed to delete user' }); }
 });
@@ -4182,7 +4290,7 @@ app.patch('/api/api_ingests/:id', async (req, res) => {
 });
 
 // Delete a report and its associated uploaded docs and media files
-app.delete('/api/reports/:id', async (req, res) => {
+app.delete('/api/reports/:id', requireAdmin, async (req, res) => {
     const id = req.params.id;
     try {
         // Safely delete uploaded_docs rows if the DB has a report_id column.

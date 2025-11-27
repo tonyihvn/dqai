@@ -462,6 +462,20 @@ const PermissionsList: React.FC = () => {
 const SettingsPage: React.FC = () => {
     const { settings, setSettings, reset } = useTheme();
     const [tab, setTab] = useState<'database' | 'llm' | 'rag' | 'theme' | 'app' | 'permissions' | 'datasets' | 'audit' | 'email'>('theme');
+    const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const r = await fetch('/api/current_user', { credentials: 'include' });
+                if (r.ok) {
+                    const j = await r.json();
+                    const role = j && (j.role || '').toString().toLowerCase();
+                    setIsAdmin(role === 'admin');
+                } else setIsAdmin(false);
+            } catch (e) { setIsAdmin(false); }
+        })();
+    }, []);
     const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const f = e.target.files?.[0];
         if (!f) return;
@@ -527,6 +541,17 @@ const SettingsPage: React.FC = () => {
             } catch (e) { /* ignore */ }
         })();
     }, []);
+
+    if (isAdmin === false) {
+        return (
+            <div className="p-6">
+                <Card>
+                    <h2 className="text-lg font-medium">Access Restricted</h2>
+                    <p className="text-sm text-gray-600 mt-2">Settings are restricted to users with the Admin role. Contact an administrator if you need access.</p>
+                </Card>
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-6">
