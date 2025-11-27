@@ -111,13 +111,11 @@ const WysiwygEditor: React.FC<Props> = ({ value = '', onChange }) => {
         plugins: [
           'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'anchor',
           'searchreplace', 'visualblocks', 'code', 'fullscreen',
-          'insertdatetime', 'media', 'table', 'help', 'wordcount', 'directionality',
-          'codesample'
+          'insertdatetime', 'media', 'table', 'help', 'wordcount', 'directionality', 'codesample',
+          'code', 'quickbars'
         ],
         toolbar:
-          'undo redo | table media charmap image | formatselect | bold italic backcolor | ' +
-          'alignleft aligncenter alignright alignjustify | bullist numlist outdent indent | ' +
-          'removeformat | ltr rtl | code',
+          'undo redo | fontselect fontsizeselect | bold italic underline | forecolor backcolor | lineheightfullscreen | alignleft aligncenter alignright | bullist numlist | table image media | link | code fullscreen',
         toolbar_mode: 'floating',
         zIndex: 3000,
         // keep default content styling, but ensure popups are visible

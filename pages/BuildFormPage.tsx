@@ -76,6 +76,10 @@ const QuestionEditor: React.FC<QuestionEditorProps> = ({
               <label className="text-xs text-gray-500">Score:</label>
               <input type="number" min={0} className="border px-1 py-0.5 rounded text-xs w-20" value={question.metadata?.score ?? ''} onChange={e => updateQuestion(pIdx, sIdx, qIdx, { metadata: { ...(question.metadata || {}), score: e.target.value === '' ? undefined : Number(e.target.value) } })} />
             </div>
+            <div className="flex items-center gap-1">
+              <label className="text-xs text-gray-500">Correct Answer:</label>
+              <input type="text" className="border px-1 py-0.5 rounded text-xs w-36" value={question.correctAnswer || question.correct_answer || ''} onChange={e => updateQuestion(pIdx, sIdx, qIdx, { correctAnswer: e.target.value })} placeholder="e.g. Yes" />
+            </div>
           </div>
           <div className="flex flex-col">
             <button type="button" onClick={() => moveQuestion(pIdx, sIdx, qIdx, 'up')} disabled={isFirst} className="text-gray-400 hover:text-gray-600 disabled:opacity-30"><ArrowUpIcon className="h-4 w-4" /></button>

@@ -67,7 +67,10 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
       try {
         const meta = { ...(b.meta || {}), left: b.left, top: b.top, width: b.width, height: b.height, html: b.html };
         const safe = JSON.stringify(meta).replace(/</g, '&lt;');
-        combined += `<div class="tpl-block" data-block-id="${b.id}" data-block-json='${safe}' style="position:absolute; left:${b.left}px; top:${b.top}px">${b.html}</div>`;
+        let styleAttr = `position:absolute; left:${b.left}px; top:${b.top}px`;
+        if (b.width) styleAttr += `; width:${typeof b.width === 'number' ? b.width + 'px' : b.width}`;
+        if (b.height) styleAttr += `; height:${typeof b.height === 'number' ? b.height + 'px' : b.height}`;
+        combined += `<div class="tpl-block" data-block-id="${b.id}" data-block-json='${safe}' style="${styleAttr}">${b.html}</div>`;
       } catch (e) { /* ignore */ }
     }
     // sync internalHtml to editable content (without blocks) but avoid forcing a render on every tiny input by only updating when explicitly requested
@@ -94,17 +97,19 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
     } catch (e) { }
     onChange && onChange(payload as any);
     // push snapshot to history (blocks + html) optionally
-    if (opts && opts.pushHistory === false) return;
-    try {
-      const snap = { html: editableHtml || '', blocks: JSON.parse(JSON.stringify(blocks || [])) };
-      setHistory(h => {
-        const next = h.slice(0, historyIndex + 1);
-        next.push(snap);
-        if (next.length > 50) next.shift();
-        return next;
-      });
-      setHistoryIndex(i => Math.min(historyIndex + 1, 49));
-    } catch (e) { /* ignore history errors */ }
+    // Only push history snapshots when explicitly asked (commands/actions).
+    if (opts && opts.pushHistory === true) {
+      try {
+        const snap = { html: editableHtml || '', blocks: JSON.parse(JSON.stringify(blocks || [])) };
+        setHistory(h => {
+          const next = h.slice(0, historyIndex + 1);
+          next.push(snap);
+          if (next.length > 50) next.shift();
+          return next;
+        });
+        setHistoryIndex(i => Math.min(historyIndex + 1, 49));
+      } catch (e) { /* ignore history errors */ }
+    }
   };
 
   const insertHtmlAtCursor = (html: string) => {
@@ -166,11 +171,22 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
       const left = opts?.left ?? 40; const top = opts?.top ?? 40;
       const w = opts?.width ?? 120; const h = opts?.height ?? 60;
       const fill = opts?.fill ?? 'none'; const stroke = opts?.stroke ?? '#111';
+      // build responsive SVG (use viewBox and make width/height:100% so the block container controls sizing)
       let svg = '';
-      if (shape === 'rect') svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect x="0" y="0" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}"/></svg>`;
-      else if (shape === 'circle') svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><circle cx="${Math.round(w / 2)}" cy="${Math.round(h / 2)}" r="${Math.round(Math.min(w, h) / 2 - 4)}" fill="${fill}" stroke="${stroke}"/></svg>`;
-      else if (shape === 'line') svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><line x1="0" y1="${Math.round(h / 2)}" x2="${w}" y2="${Math.round(h / 2)}" stroke="${stroke}" stroke-width="2"/></svg>`;
-      insertBlockAt(svg, left, top);
+      if (shape === 'rect') svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" width="100%" height="100%"><rect x="0" y="0" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}"/></svg>`;
+      else if (shape === 'circle') svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" width="100%" height="100%"><circle cx="${Math.round(w / 2)}" cy="${Math.round(h / 2)}" r="${Math.round(Math.min(w, h) / 2 - 4)}" fill="${fill}" stroke="${stroke}"/></svg>`;
+      else if (shape === 'line') svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" width="100%" height="100%"><line x1="0" y1="${Math.round(h / 2)}" x2="${w}" y2="${Math.round(h / 2)}" stroke="${stroke}" stroke-width="2"/></svg>`;
+      // create block directly so we can store shape metadata (so inspector can show properties)
+      try {
+        const id = `b_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const block = { id, html: svg, left, top, width: w, height: h, meta: { shape, fill, stroke }, _localUpdatedAt: Date.now() } as any;
+        setBlocks(prev => {
+          const next = [...prev, block];
+          return next;
+        });
+        localChangeLockRef.current = Date.now() + 800;
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 50);
+      } catch (e) { console.error('insertShape failed', e); }
     },
     duplicateSelected: () => {
       try {
@@ -182,7 +198,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         const copy = { ...JSON.parse(JSON.stringify(b)), id, left: b.left + 10, top: b.top + 10, _localUpdatedAt: Date.now() };
         setBlocks(prev => [...prev, copy]);
         localChangeLockRef.current = Date.now() + 800;
-        setTimeout(() => emitChange({ immediate: true } as any), 40);
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
       } catch (e) { console.error(e); }
     },
 
@@ -196,7 +212,10 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         try {
           const meta = { ...(b.meta || {}), left: b.left, top: b.top, width: b.width, height: b.height, html: b.html };
           const safe = JSON.stringify(meta).replace(/</g, '&lt;');
-          combined += `<div class="tpl-block" data-block-id="${b.id}" data-block-json='${safe}' style="position:absolute; left:${b.left}px; top:${b.top}px">${b.html}</div>`;
+          let styleAttr = `position:absolute; left:${b.left}px; top:${b.top}px`;
+          if (b.width) styleAttr += `; width:${typeof b.width === 'number' ? b.width + 'px' : b.width}`;
+          if (b.height) styleAttr += `; height:${typeof b.height === 'number' ? b.height + 'px' : b.height}`;
+          combined += `<div class="tpl-block" data-block-id="${b.id}" data-block-json='${safe}' style="${styleAttr}">${b.html}</div>`;
         } catch (e) { /* ignore */ }
       }
       return combined;
@@ -208,7 +227,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         const now = Date.now();
         setBlocks(prev => prev.map(b => (String(b.id) === String(blockId) ? { ...b, ...(updates.html !== undefined ? { html: updates.html } : {}), ...(updates.left !== undefined ? { left: updates.left } : {}), ...(updates.top !== undefined ? { top: updates.top } : {}), ...(updates.meta ? { meta: { ...(b.meta || {}), ...(updates.meta || {}) } } : {}), _localUpdatedAt: now } : b)));
         localChangeLockRef.current = Date.now() + 800;
-        setTimeout(() => emitChange({ immediate: true } as any), 40);
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
       } catch (e) { console.error('updateBlock failed', e); }
     }
     ,
@@ -224,7 +243,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           return next;
         });
         localChangeLockRef.current = Date.now() + 800;
-        setTimeout(() => emitChange({ immediate: true } as any), 40);
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
       } catch (e) { console.error('bringForward failed', e); }
     },
     sendBackward: (blockId: string) => {
@@ -238,7 +257,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           return next;
         });
         localChangeLockRef.current = Date.now() + 800;
-        setTimeout(() => emitChange({ immediate: true } as any), 40);
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
       } catch (e) { console.error('sendBackward failed', e); }
     },
     bringToFront: (blockId: string) => {
@@ -252,7 +271,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           return next;
         });
         localChangeLockRef.current = Date.now() + 800;
-        setTimeout(() => emitChange({ immediate: true } as any), 40);
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
       } catch (e) { console.error('bringToFront failed', e); }
     },
     sendToBack: (blockId: string) => {
@@ -266,7 +285,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           return next;
         });
         localChangeLockRef.current = Date.now() + 800;
-        setTimeout(() => emitChange({ immediate: true } as any), 40);
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
       } catch (e) { console.error('sendToBack failed', e); }
     }
     ,
@@ -274,7 +293,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
       try {
         setBlocks(prev => prev.filter(b => String(b.id) !== String(blockId)));
         localChangeLockRef.current = Date.now() + 800;
-        setTimeout(() => emitChange({ immediate: true } as any), 40);
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
       } catch (e) { console.error('deleteBlock failed', e); }
     }
   } as any), [insertHtmlAtCursor, internalHtml, blocksRef]);
@@ -442,8 +461,8 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
             // notify parent so it can refresh its uploadedDocs list
             try { propsOnSelect && propsOnSelect(null); } catch (e) { }
             (typeof (onUploadedDocUpdated) !== 'undefined') && (onUploadedDocUpdated as any) && (onUploadedDocUpdated as any)(json);
-            // emit change so parent template updates
-            setTimeout(() => emitChange({ immediate: true } as any), 40);
+            // emit change so parent template updates (persist as an action)
+            setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
           } else {
             console.error('Failed to save uploaded doc cell', await res.text());
           }
@@ -470,13 +489,13 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
             const copy = { ...JSON.parse(JSON.stringify(b)), id, left: b.left + 10, top: b.top + 10, _localUpdatedAt: Date.now() };
             setBlocks(prev => [...prev, copy]);
             localChangeLockRef.current = Date.now() + 800;
-            setTimeout(() => emitChange({ immediate: true } as any), 40);
+            setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40);
           }
         } else {
           // duplicate placeholder (inline) by inserting a copy at cursor
           const ph = selectedPlaceholderRef.current;
-          if (ph) {
-            try { insertHtmlAtCursor(ph.outerHTML); setTimeout(() => emitChange({ immediate: true } as any), 40); } catch (e) { }
+            if (ph) {
+            try { insertHtmlAtCursor(ph.outerHTML); setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40); } catch (e) { }
           }
         }
         return;
@@ -521,7 +540,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
             return { ...b, left: Math.round(newLeft), top: Math.round(newTop), _localUpdatedAt: Date.now() };
           }));
           localChangeLockRef.current = Date.now() + 800;
-          setTimeout(() => { emitChange({ immediate: true } as any); propsOnSelect && propsOnSelect(blocksRef.current.find(x => String(x.id) === String(selectedBlockIdRef.current)) || null); }, 30);
+          setTimeout(() => { emitChange({ immediate: true, pushHistory: true } as any); propsOnSelect && propsOnSelect(blocksRef.current.find(x => String(x.id) === String(selectedBlockIdRef.current)) || null); }, 30);
         }
         return;
       }
@@ -734,7 +753,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
     setBlocks(prev => { const next = [...prev, b]; return next; });
     // lock out incoming stale updates for a short while
     localChangeLockRef.current = Date.now() + 800;
-    setTimeout(() => emitChange({ immediate: true } as any), 50);
+    setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 50);
   };
 
   const handleInsertBlock = () => {
@@ -760,7 +779,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         return copy;
       });
     };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); localChangeLockRef.current = Date.now() + 800; setTimeout(() => emitChange({ immediate: true } as any), 50); };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); localChangeLockRef.current = Date.now() + 800; setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 50); };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   };
@@ -828,7 +847,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         return copy;
       });
     };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); localChangeLockRef.current = Date.now() + 800; setTimeout(() => emitChange({ immediate: true } as any), 40); };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); localChangeLockRef.current = Date.now() + 800; setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 40); };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   };
@@ -850,7 +869,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         return copy;
       });
     };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); localChangeLockRef.current = Date.now() + 800; setTimeout(() => emitChange({ immediate: true } as any), 50); };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); localChangeLockRef.current = Date.now() + 800; setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 50); };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   };
@@ -880,7 +899,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           if (found) {
             try { el.remove(); } catch (e) { }
             setSelectedBlockId(found.id);
-            setTimeout(() => { beginDrag(found.id, clientX, clientY); emitChange({ immediate: true } as any); }, 10);
+            setTimeout(() => { beginDrag(found.id, clientX, clientY); emitChange({ immediate: true, pushHistory: true } as any); }, 10);
             return;
           }
         }
@@ -889,7 +908,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
           if (found) {
             try { el.remove(); } catch (e) { }
             setSelectedBlockId(found.id);
-            setTimeout(() => { beginDrag(found.id, clientX, clientY); emitChange({ immediate: true } as any); }, 10);
+            setTimeout(() => { beginDrag(found.id, clientX, clientY); emitChange({ immediate: true, pushHistory: true } as any); }, 10);
             return;
           }
         }
@@ -908,7 +927,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         if (existing) {
           // remove the inline element and begin dragging the existing block
           try { el.remove(); } catch (e) { }
-          setTimeout(() => { beginDrag(existing.id, clientX, clientY); emitChange({ immediate: true } as any); }, 10);
+          setTimeout(() => { beginDrag(existing.id, clientX, clientY); emitChange({ immediate: true, pushHistory: true } as any); }, 10);
           return;
         }
       } catch (e) { }
@@ -924,7 +943,7 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         }
       } catch (e) { /* ignore */ }
       const newBlock = { id, html, left, top, width: w, height: h, meta: {}, _localUpdatedAt: Date.now() };
-      setBlocks(prev => {
+        setBlocks(prev => {
         const next = [...prev, newBlock];
         localChangeLockRef.current = Date.now() + 800;
         // start dragging slightly after state update so block exists in DOM
@@ -935,6 +954,8 @@ const CanvasEditor = forwardRef(function CanvasEditorInner({ value = '', initial
         }, 20);
         return next;
       });
+        // ensure parent saves this insertion as an action as well (in case setBlocks batching misses it)
+        setTimeout(() => emitChange({ immediate: true, pushHistory: true } as any), 60);
     } catch (e) { console.error('Failed to convert element to block', e); }
   };
 

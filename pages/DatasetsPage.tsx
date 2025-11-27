@@ -121,6 +121,24 @@ const DatasetsPage: React.FC = () => {
             <div className="flex items-center gap-2">
               <label className="text-xs text-gray-500">Upload Excel</label>
               <input type="file" accept=".xlsx" onChange={handleFileUpload} />
+              <button className="ml-2 px-3 py-1 bg-white border rounded text-sm" onClick={async () => {
+                try {
+                  if (!contentDatasetId) { alert('No dataset selected'); return; }
+                  // Collect column keys from existing rows (ignore metadata keys)
+                  const keys = contentRows[0] ? Object.keys(contentRows[0]).filter(k => k !== '__dc_id' && k !== '__roles') : [];
+                  let dataToSave: Record<string, any> = {};
+                  if (keys.length === 0) {
+                    const raw = window.prompt('No columns detected. Enter JSON object for the new row (e.g. {"col1":"value"})');
+                    if (!raw) return;
+                    try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === 'object') dataToSave = parsed; else { alert('Invalid JSON'); return; } } catch (e) { alert('Invalid JSON'); return; }
+                  } else {
+                    for (const k of keys) dataToSave[k] = '';
+                  }
+                  const res = await fetch(`/api/admin/datasets/${contentDatasetId}/content`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(dataToSave) });
+                  if (!res.ok) { const txt = await res.text().catch(()=>null); alert('Failed to add row: ' + (txt || res.statusText)); return; }
+                  await viewContent(contentDatasetId);
+                } catch (err) { console.error('Add row failed', err); alert('Add row failed'); }
+              }}>Add Row</button>
               <button className="ml-2 px-3 py-1 bg-gray-100 rounded text-sm" onClick={() => {
                 // export CSV of current contentRows
                 try {

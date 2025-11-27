@@ -6,6 +6,8 @@ import ActivitiesPage from './pages/ActivitiesPage';
 import BuildFormPage from './pages/BuildFormPage';
 import FillFormPage from './pages/FillFormPage';
 import ActivityDashboardPage from './pages/ActivityDashboardPage';
+import ActivitySubmittedAnswersPage from './pages/ActivitySubmittedAnswersPage';
+import ActivityExcelTablesPage from './pages/ActivityExcelTablesPage';
 import QuestionFollowupPage from './pages/QuestionFollowupPage';
 import ReportsPage from './pages/ReportsPage';
 import ReportViewPage from './pages/ReportViewPage';
@@ -17,6 +19,7 @@ import LoginPage from './pages/LoginPage';
 import SettingsPage from './pages/SettingsPage';
 import ProfilePage from './pages/ProfilePage';
 import DocsPage from './pages/DocsPage';
+import ApiConnectorsPage from './pages/ApiConnectorsPage';
 import { DataProvider, useMockData } from './hooks/useMockData';
 import ErrorBoundary from './components/ErrorBoundary';
 
@@ -44,6 +47,8 @@ const AppRoutes = () => {
       <Route path="/standalone/fill/:activityId" element={<FillFormPage standaloneMode={true} />} />
 
       <Route path="/activities/dashboard/:activityId" element={<ProtectedRoute><Layout><ActivityDashboardPage /></Layout></ProtectedRoute>} />
+      <Route path="/activities/:activityId/submitted-answers" element={<ProtectedRoute><Layout><ActivitySubmittedAnswersPage /></Layout></ProtectedRoute>} />
+      <Route path="/activities/:activityId/excel-tables" element={<ProtectedRoute><Layout><ActivityExcelTablesPage /></Layout></ProtectedRoute>} />
       <Route path="/activities/:activityId/followups" element={<ProtectedRoute><Layout><QuestionFollowupPage /></Layout></ProtectedRoute>} />
 
       <Route path="/activities" element={<ProtectedRoute><Layout><ActivitiesPage /></Layout></ProtectedRoute>} />
@@ -53,6 +58,7 @@ const AppRoutes = () => {
       <Route path="/reports/:reportId" element={<ProtectedRoute><Layout><ReportViewPage /></Layout></ProtectedRoute>} />
 
       <Route path="/settings" element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
+      <Route path="/connectors" element={<ProtectedRoute><Layout><ApiConnectorsPage /></Layout></ProtectedRoute>} />
       <Route path="/docs" element={<Layout><DocsPage /></Layout>} />
       <Route path="/profile" element={<ProtectedRoute><Layout><ProfilePage /></Layout></ProtectedRoute>} />
 

@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "@langchain/core": "^0.1.60",
+    "@langchain/openai": "^0.0.29",
     "@tinymce/tinymce-react": "^6.3.0",
     "@vitejs/plugin-react": "^5.1.1",
     "bcrypt": "^5.1.1",
@@ -24,6 +26,7 @@
     "fabric": "^5.3.0",
     "html-docx-js": "^0.3.1",
     "jsdom": "^27.2.0",
+    "langchain": "^0.1.37",
     "mongodb": "^7.0.0",
     "mysql2": "^3.15.3",
     "nodemailer": "^7.0.10",

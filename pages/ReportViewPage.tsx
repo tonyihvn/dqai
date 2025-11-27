@@ -170,13 +170,128 @@ const ReportViewPage: React.FC = () => {
   const handlePrint = () => window.print();
 
   const handlePrintFormatted = async () => {
-    // Open the server PDF/HTML endpoint in a new tab so the browser handles rendering or download.
+    // Build a sanitized HTML summary client-side and open in a new window for printing.
     try {
-      const base = getApiBase();
-      const url = base ? `${base}/api/reports/${report.id}/pdf` : `/api/reports/${report.id}/pdf`;
-      // open a new tab/window — the server will return application/pdf or text/html
-      window.open(url, '_blank');
-    } catch (e) { console.error('Open PDF endpoint failed', e); alert('Failed to open PDF'); }
+      const escapeHtml = (s: any) => {
+        if (s === null || s === undefined) return '';
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      };
+
+      const sanitizeHtml = (html: any) => {
+        if (!html) return '';
+        let out = String(html || '');
+        // strip dangerous / heavy elements
+        out = out.replace(/<video[\s\S]*?<\/video>/gi, '');
+        out = out.replace(/<iframe[\s\S]*?<\/iframe>/gi, '');
+        out = out.replace(/<object[\s\S]*?<\/object>/gi, '');
+        out = out.replace(/<embed[\s\S]*?<\/embed>/gi, '');
+        out = out.replace(/<script[\s\S]*?<\/script>/gi, '');
+        // remove very large data URLs in src attributes to avoid viewer failures
+        out = out.replace(/src=(\"|\')(data:[^\"']{5000,})(\"|\')/gi, '');
+        return out;
+      };
+
+      // Build answers HTML
+      const qMap: Record<string, any> = {};
+      for (const q of questions || []) {
+        try {
+          if (q && (q.id !== undefined)) qMap[String(q.id)] = q;
+          if (q && (q.qid !== undefined)) qMap[String(q.qid)] = q;
+          if (q && (q.question_id !== undefined)) qMap[String(q.question_id)] = q;
+        } catch (e) { }
+      }
+
+      const answersHtmlParts: string[] = [];
+      for (const a of answers || []) {
+        try {
+          const qid = String(a.question_id || a.qid || a.questionId || '');
+          const q = qMap[qid] || {};
+          const questionText = q.questionText || q.question_text || q.text || q.label || q.title || q.name || qid;
+          let val = a.answer_value;
+          if (val === null || val === undefined) val = '';
+          if (typeof val === 'object') val = JSON.stringify(val);
+          answersHtmlParts.push(`<tr><td style="vertical-align:top;padding:6px;border:1px solid #ddd;width:40%"><strong>${escapeHtml(questionText)}</strong></td><td style="padding:6px;border:1px solid #ddd">${escapeHtml(val)}</td></tr>`);
+        } catch (e) { }
+      }
+
+      // Build uploaded docs tables (only include JSON/array content rows; sanitize cell values)
+      const renderUploadedTables = () => {
+        const parts: string[] = [];
+        for (const d of uploadedDocs || []) {
+          try {
+            // ensure doc belongs to this report
+            const rpt = (d.report_id ?? d.reportId ?? d.report) || null;
+            if (String(rpt) !== String(report.id)) continue;
+            const rows = Array.isArray(d.file_content) ? d.file_content : (Array.isArray(d.dataset_data) ? d.dataset_data : []);
+            if (!rows || rows.length === 0) continue;
+            const keys = Object.keys(rows[0] || {});
+            let html = `<div style="margin-top:18px"><div style="font-weight:600;margin-bottom:6px">${escapeHtml(d.filename || 'Uploaded file')}</div><table style="border-collapse:collapse;width:100%"><thead><tr>`;
+            for (const k of keys) html += `<th style="border:1px solid #ddd;padding:6px;background:#f7f7f7;text-align:left">${escapeHtml(k)}</th>`;
+            html += '</tr></thead><tbody>';
+            for (const r of rows) {
+              html += '<tr>';
+              for (const k of keys) {
+                const val = r && typeof r === 'object' && (r[k] !== undefined && r[k] !== null) ? String(r[k]) : '';
+                html += `<td style="border:1px solid #ddd;padding:6px">${escapeHtml(val)}</td>`;
+              }
+              html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+            parts.push(html);
+          } catch (e) { }
+        }
+        return parts.join('\n');
+      };
+
+      const reviewers = sanitizeHtml(report.reviewersReport || report.reviewers_report || '');
+
+      // Power BI: show only a link if present (do not embed iframe)
+      let powerbiHtml = '';
+      try {
+        const pb = powerbiConfig && (powerbiConfig.powerbi_link || powerbiConfig.powerbi_url || powerbiConfig.powerbiLink);
+        if (pb) {
+          powerbiHtml = `<div><strong>Power BI:</strong> <a href="${escapeHtml(pb)}" target="_blank" rel="noreferrer">Open Power BI report</a></div>`;
+        }
+      } catch (e) { }
+
+      // Build final HTML doc
+      const title = `Report ${escapeHtml(String(report.id || ''))}`;
+      const facility = escapeHtml(report.facility || report.facility_name || report.facilityName || '');
+      const activityName = escapeHtml(activityTitle || (activityData && (activityData.title || activityData.name)) || '');
+      const submissionDate = escapeHtml(String(report.submission_date || ''));
+      const reportedBy = escapeHtml(report.reported_by || report.reported_by_name || report.reportedBy || report.user_name || '');
+      const status = escapeHtml(report.status || '');
+      const overallScore = escapeHtml(String(report.overallScore ?? report.overall_score ?? ''));
+
+      const htmlDoc = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Arial,Helvetica,sans-serif;color:#111;line-height:1.4;padding:20px}h1{font-size:20px;margin-bottom:8px}table{width:100%;border-collapse:collapse}th,td{padding:6px;border:1px solid #ddd}thead th{background:#f7f7f7}</style></head><body>` +
+        `<h1>${title}</h1>` +
+        `<div style="margin-bottom:12px"><strong>Facility Name:</strong> ${facility || '—'}</div>` +
+        `<div style="margin-bottom:12px"><strong>Activity Name:</strong> ${activityName || '—'}</div>` +
+        `<div style="margin-bottom:12px"><strong>Submission Date:</strong> ${submissionDate || '—'}</div>` +
+        `<div style="margin-bottom:12px"><strong>Reported By:</strong> ${reportedBy || '—'}</div>` +
+        `<div style="margin-bottom:12px"><strong>Status:</strong> ${status || '—'}</div>` +
+        `<div style="margin-bottom:12px"><strong>Overall Score:</strong> ${overallScore || '—'}</div>` +
+        `<div style="margin-top:16px;margin-bottom:6px"><strong>Reviewer's Report</strong></div>` +
+        `<div style="border:1px solid #eee;padding:10px;margin-bottom:12px">${reviewers || '<em>No review yet</em>'}</div>` +
+        `${powerbiHtml}` +
+        `<div style="margin-top:16px;margin-bottom:6px"><strong>Submitted Answers</strong></div>` +
+        (answersHtmlParts.length === 0 ? '<div><em>No answers submitted</em></div>' : `<table><tbody>${answersHtmlParts.join('')}</tbody></table>`) +
+        `<div style="margin-top:16px;margin-bottom:6px"><strong>Uploaded Excel Files</strong></div>` +
+        (renderUploadedTables() || '<div><em>No uploaded files</em></div>') +
+        `</body></html>`;
+
+      const w = window.open('about:blank');
+      if (w && w.document) {
+        w.document.write(htmlDoc);
+        w.document.close();
+      } else {
+        // Fallback: open data URL (may be blocked on some browsers for large content)
+        const blob = new Blob([htmlDoc], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }
+    } catch (e) { console.error('Open PDF endpoint failed', e); alert('Failed to open printable view'); }
   };
 
   const handlePreviewPdf = async () => {

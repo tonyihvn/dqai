@@ -32,6 +32,7 @@ const ReportBuilderPage: React.FC = () => {
   const [iframeLoading, setIframeLoading] = useState<boolean>(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState<boolean>(true);
+  const [contextMenuPos, setContextMenuPos] = useState<{ open: boolean; x?: number; y?: number }>({ open: false });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [panelPos, setPanelPos] = useState<{ x: number; y: number; }>(() => {
@@ -590,7 +591,14 @@ const ReportBuilderPage: React.FC = () => {
                 reader.readAsDataURL(f as Blob);
               }
             } catch (err) { console.error('Panel drop handling failed', err); }
-          }} onDragOver={e => e.preventDefault()} style={{ position: 'fixed', left: panelPos.x, top: panelPos.y, width: panelSize.width, height: panelSize.height, zIndex: 9999, maxHeight: '90vh', overflowY: 'auto' }} className="bg-white border rounded shadow-lg p-3">
+          }} onDragOver={e => e.preventDefault()} onContextMenu={(e) => {
+            // Show a small context menu for selected blocks on right-click
+            try {
+              e.preventDefault();
+              if (selectedBlock) setContextMenuPos({ open: true, x: e.clientX, y: e.clientY });
+              else setContextMenuPos({ open: false });
+            } catch (err) { setContextMenuPos({ open: false }); }
+          }} onMouseDown={() => { if (contextMenuPos.open) setContextMenuPos({ open: false }); }} style={{ position: 'fixed', left: panelPos.x, top: panelPos.y, width: panelSize.width, height: panelSize.height, zIndex: 9999, maxHeight: '90vh', overflowY: 'auto' }} className="bg-white border rounded shadow-lg p-3">
             <div className="cursor-move mb-2 font-medium flex items-center justify-between" onMouseDown={(e) => { try { dragRef.current.dragging = true; dragRef.current.startX = (e as any).clientX; dragRef.current.startY = (e as any).clientY; dragRef.current.origX = panelPos.x; dragRef.current.origY = panelPos.y; } catch (err) { } }}>
               <div className="flex items-center gap-2 w-full">
                 <div className="flex items-center gap-2">
@@ -750,7 +758,22 @@ const ReportBuilderPage: React.FC = () => {
                   <button title="Insert Text" className="p-2 border rounded hover:bg-gray-100" onClick={() => { if (disableRichText || richTextMode === 'none') { setComposeHtml('<div><p>New text</p></div>'); setComposeOpen(true); } else { setComposeHtml(''); setComposeOpen(true); } }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></button>
                   <button title="Insert Block" className="p-2 border rounded hover:bg-gray-100" onClick={() => canvasRef.current?.insertBlock?.()}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></svg></button>
                   <button title="Insert Image" className="p-2 border rounded hover:bg-gray-100" onClick={() => fileInputRef.current?.click()}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></svg></button>
+
                   <button title="Insert Image (URL)" className="p-2 border rounded hover:bg-gray-100" onClick={() => canvasRef.current?.insertImageUrl?.()}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg></button>
+
+                  {/* Vector shape buttons */}
+                  <button title="Insert Rectangle" className="p-2 border rounded hover:bg-gray-100" onClick={() => { try { (canvasRef.current as any)?.insertShape?.('rect', { width: 160, height: 100, fill: 'none', stroke: '#111' }); } catch (e) { console.error(e); } }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="5" width="16" height="12" rx="1" ry="1"/></svg>
+                  </button>
+                  <button title="Insert Circle" className="p-2 border rounded hover:bg-gray-100" onClick={() => { try { (canvasRef.current as any)?.insertShape?.('circle', { width: 96, height: 96, fill: 'none', stroke: '#111' }); } catch (e) { console.error(e); } }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="6"/></svg>
+                  </button>
+                  <button title="Insert Triangle" className="p-2 border rounded hover:bg-gray-100" onClick={() => { try { const svg = `<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"140\" height=\"100\" viewBox=\"0 0 140 100\"><polygon points=\"70,8 132,92 8,92\" fill=\"none\" stroke=\"#111\"/></svg>`; (canvasRef.current as any)?.insertBlock?.({ html: svg, left: 40, top: 40 }); } catch (e) { console.error(e); } }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3l9 16H3l9-16z"/></svg>
+                  </button>
+                  <button title="Insert Line" className="p-2 border rounded hover:bg-gray-100" onClick={() => { try { (canvasRef.current as any)?.insertShape?.('line', { width: 160, height: 12, stroke: '#111' }); } catch (e) { console.error(e); } }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 12h16"/></svg>
+                  </button>
 
                   <button title="Undo" className="p-2 border rounded hover:bg-gray-100" onClick={() => { try { canvasRef.current?.undo?.(); } catch (e) { document.execCommand && document.execCommand('undo'); } }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7v6h6M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13" /></svg></button>
                   <button title="Redo" className="p-2 border rounded hover:bg-gray-100" onClick={() => { try { canvasRef.current?.redo?.(); } catch (e) { document.execCommand && document.execCommand('redo'); } }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 7v6h-6M3 17a9 9 0 009-9 9 9 0 016 2.3l3 2.7" /></svg></button>
@@ -1218,6 +1241,22 @@ const ReportBuilderPage: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {/* Context menu for selected block (right-click) */}
+        {contextMenuPos.open && selectedBlock && (
+          <div style={{ position: 'fixed', left: contextMenuPos.x || 0, top: contextMenuPos.y || 0, zIndex: 120000 }} onMouseDown={(e) => { e.stopPropagation(); }}>
+            <div className="bg-white border rounded shadow-md text-xs" style={{ minWidth: 160 }}>
+              <div className="flex flex-col">
+                <button className="text-left px-3 py-2 hover:bg-gray-100" onClick={() => { try { canvasRef.current?.bringToFront?.(selectedBlock.id); } catch (e) { console.error(e); } setContextMenuPos({ open: false }); }}>Bring to front</button>
+                <button className="text-left px-3 py-2 hover:bg-gray-100" onClick={() => { try { canvasRef.current?.sendToBack?.(selectedBlock.id); } catch (e) { console.error(e); } setContextMenuPos({ open: false }); }}>Send to back</button>
+                <button className="text-left px-3 py-2 hover:bg-gray-100" onClick={() => { try { canvasRef.current?.bringForward?.(selectedBlock.id); } catch (e) { console.error(e); } setContextMenuPos({ open: false }); }}>Bring forward</button>
+                <button className="text-left px-3 py-2 hover:bg-gray-100" onClick={() => { try { canvasRef.current?.sendBackward?.(selectedBlock.id); } catch (e) { console.error(e); } setContextMenuPos({ open: false }); }}>Send backward</button>
+                <div className="border-t" />
+                <button className="text-left px-3 py-2 text-red-600 hover:bg-gray-100" onClick={() => { try { canvasRef.current?.deleteBlock?.(selectedBlock.id); setSelectedBlock(null); } catch (e) { console.error(e); } setContextMenuPos({ open: false }); }}>Delete</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       <aside
         className="inspector-panel"

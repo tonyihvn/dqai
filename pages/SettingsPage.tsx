@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import Modal from '../components/ui/Modal';
 import DatasetsPage from './DatasetsPage';
 import { useTheme } from '../hooks/useTheme';
 import { appRoutes } from '../appRoutes';
@@ -39,13 +40,39 @@ const LLMSettingsForm: React.FC = () => {
         setDetectedModels([]);
         setSelectedDetected(null);
         try {
-            // try admin endpoint first then fallback to public detect endpoint
+            // try server admin detect endpoint first then fallback to public detect endpoint
             let r = await fetch('/api/admin/detect-ollama', { credentials: 'include' });
             if (r.status === 401) r = await fetch('/api/detect-ollama');
-            if (!r.ok) { alert('No local Ollama detected or not authorized'); return; }
+
+            // if server endpoints failed or returned no models, try direct local Ollama tag endpoint
+            if (!r.ok) {
+                try {
+                    const direct = await fetch('http://127.0.0.1:11434/api/tags');
+                    if (direct.ok) {
+                        const jd = await direct.json();
+                        if (jd && Array.isArray(jd.models) && jd.models.length) {
+                            setDetectedModels(jd.models.map((m: any) => m.name || m.id || String(m)));
+                            setDetecting(false);
+                            return;
+                        }
+                    }
+                } catch (e) { /* ignore local probe failure */ }
+                alert('No local Ollama detected or not authorized');
+                return;
+            }
+
             const j = await r.json();
-            if (j && j.ok && Array.isArray(j.models) && j.models.length) setDetectedModels(j.models);
-            else alert('No local Ollama models detected');
+            // admin/public detect returns { ok: true, models: [...] } or { ok: true, version: ... }
+            if (j && j.ok && Array.isArray(j.models) && j.models.length) {
+                // may already be an array of names or objects
+                const models = j.models.map((m: any) => (typeof m === 'string' ? m : (m.name || m.id || String(m))));
+                setDetectedModels(models as string[]);
+            } else if (j && j.ok && j.version) {
+                // version found but no models; notify user
+                alert('Ollama detected (version info found), but no models installed locally. Use /api/pull to install models.');
+            } else {
+                alert('No local Ollama models detected');
+            }
         } catch (e) {
             console.error(e);
             alert('Error detecting local Ollama: ' + String(e));
@@ -434,7 +461,7 @@ const PermissionsList: React.FC = () => {
 
 const SettingsPage: React.FC = () => {
     const { settings, setSettings, reset } = useTheme();
-    const [tab, setTab] = useState<'database' | 'llm' | 'rag' | 'theme' | 'app' | 'permissions' | 'datasets'>('theme');
+    const [tab, setTab] = useState<'database' | 'llm' | 'rag' | 'theme' | 'app' | 'permissions' | 'datasets' | 'audit'>('theme');
     const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const f = e.target.files?.[0];
         if (!f) return;
@@ -516,6 +543,8 @@ const SettingsPage: React.FC = () => {
                     <button onClick={() => setTab('app')} className={`px-3 py-2 rounded ${tab === 'app' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>App</button>
                     <button onClick={() => setTab('datasets')} className={`px-3 py-2 rounded ${tab === 'datasets' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Datasets</button>
                     <button onClick={() => setTab('permissions')} className={`px-3 py-2 rounded ${tab === 'permissions' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Roles & Permissions</button>
+                    <button onClick={() => setTab('audit')} className={`px-3 py-2 rounded ${tab === 'audit' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Audit Trails</button>
+                    <a href="#/connectors" className="px-3 py-2 rounded text-gray-600 hover:bg-gray-50">API Connectors</a>
                 </nav>
             </div>
 
@@ -765,11 +794,87 @@ const SettingsPage: React.FC = () => {
                     </div>
                 </Card>
             )}
+
+            {tab === 'audit' && (
+                <Card>
+                    <h3 className="text-lg font-medium mb-2">Audit Trails</h3>
+                    <AuditTrails />
+                </Card>
+            )}
         </div>
     );
 };
 
 export default SettingsPage;
+
+const AuditTrails: React.FC = () => {
+    const [list, setList] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [jsonViewerOpen, setJsonViewerOpen] = useState(false);
+    const [jsonViewerContent, setJsonViewerContent] = useState<any>(null);
+
+    const load = async () => {
+        setLoading(true);
+        try {
+            let r = await fetch('/api/admin/audit_batches', { credentials: 'include' });
+            if (r.status === 401) r = await fetch('/api/audit_batches');
+            if (r.ok) setList(await r.json());
+            else setList([]);
+        } catch (e) { console.error('Failed to load audit batches', e); setList([]); }
+        setLoading(false);
+    };
+
+    useEffect(() => { load(); }, []);
+
+    const columns = [
+        { key: 'id', label: 'ID' },
+        { key: 'batch_name', label: 'Batch' },
+        { key: 'created_at', label: 'Created' },
+        { key: 'created_by', label: 'By' },
+        { key: 'status', label: 'Status' },
+        { key: 'details', label: 'Details' },
+        { key: '__actions', label: '', render: (row: any) => (
+            <div className="flex items-center gap-2">
+              <button className="text-xs text-blue-600" onClick={() => { setJsonViewerContent(row.events || row.details || row); setJsonViewerOpen(true); }}>View</button>
+            </div>
+        ) }
+    ];
+
+    const data = (list || []).map((r: any) => ({
+        id: r.id,
+        batch_name: r.batch_name || r.name || '',
+        created_at: r.created_at || r.created || '',
+        created_by: r.created_by || (r.user && (r.user.email || r.user.name)) || '',
+        status: r.status || r.state || '',
+        details: r.details ? (typeof r.details === 'object' ? JSON.stringify(r.details) : String(r.details)) : (r.description || ''),
+    }));
+
+    return (
+        <div>
+            <div className="flex items-center justify-between mb-3">
+                <div className="font-medium">Audit Batches</div>
+                <div className="flex gap-2">
+                    <Button onClick={load}>Refresh</Button>
+                </div>
+            </div>
+            {loading && <div className="text-sm text-gray-500">Loading...</div>}
+            {!loading && data.length === 0 && <div className="text-sm text-gray-500">No audit batches found.</div>}
+            {!loading && data.length > 0 && (
+                                <>
+                                    <DataTable columns={columns} data={data} />
+                                    <Modal isOpen={jsonViewerOpen} onClose={() => setJsonViewerOpen(false)} title="Audit Events">
+                                        <div>
+                                            <pre className="whitespace-pre-wrap text-sm bg-gray-50 p-3 rounded" style={{ maxHeight: '60vh', overflow: 'auto' }}>{jsonViewerContent ? (typeof jsonViewerContent === 'string' ? jsonViewerContent : JSON.stringify(jsonViewerContent, null, 2)) : ''}</pre>
+                                            <div className="flex justify-end mt-2">
+                                                <Button onClick={() => setJsonViewerOpen(false)}>Close</Button>
+                                            </div>
+                                        </div>
+                                    </Modal>
+                                </>
+            )}
+        </div>
+    );
+};
 
 const RagManager: React.FC = () => {
     const [list, setList] = useState<any[]>([]);

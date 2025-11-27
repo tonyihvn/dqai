@@ -38,6 +38,14 @@ const ActivityDashboardPage: React.FC = () => {
   const [powerbiLinkType, setPowerbiLinkType] = useState<string | null>(null);
   const [powerbiMode, setPowerbiMode] = useState<string | null>(null);
   const [powerbiSaving, setPowerbiSaving] = useState(false);
+  // AI assistant states
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResponseText, setAiResponseText] = useState<string | null>(null);
+  const [aiResponseSql, setAiResponseSql] = useState<string | null>(null);
+  const [aiQueryResult, setAiQueryResult] = useState<any | null>(null);
+  const [selectedSchemas, setSelectedSchemas] = useState<string[]>([]);
+  const [selectedBusinessRules, setSelectedBusinessRules] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchDashboard = async () => {
@@ -127,6 +135,8 @@ const ActivityDashboardPage: React.FC = () => {
             <Button onClick={() => navigate(`/activities/fill/${activity.id}`)} variant="primary">New +</Button>
             <Button onClick={() => navigate(`/reports/builder?activityId=${activity.id}`)} variant="secondary">Build Report</Button>
             <Button onClick={handleDownloadPdf}>Download PDF</Button>
+            <Button variant="secondary" onClick={() => navigate(`/activities/${activity.id}/submitted-answers`)}>View Submitted Answers</Button>
+            <Button variant="secondary" onClick={() => navigate(`/activities/${activity.id}/excel-tables`)}>View Excel Tables</Button>
           </div>
         </div>
       </div>
@@ -156,6 +166,96 @@ const ActivityDashboardPage: React.FC = () => {
             }
             return <iframe title="PowerBI" src={url} style={{ width: '100%', height: 300, border: 'none' }} />;
           })()}
+        </div>
+      </Card>
+
+      <Card>
+        <h2 className="text-lg font-semibold mb-2">AI Assistant</h2>
+        <p className="text-sm text-gray-500">Ask the AI to help analyze or generate read-only SQL for this activity's data. The model will be provided activity context and available RAG schemas.</p>
+        <div className="mt-3">
+          <textarea className="w-full border rounded p-2" rows={3} placeholder="Ask a question or request SQL (e.g. 'Show total reports per facility for this activity')" value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} />
+          <div className="mt-2 flex gap-2">
+            <Button variant="primary" onClick={async () => {
+              if (!aiPrompt || !aiPrompt.trim()) return alert('Enter a prompt');
+              setAiLoading(true); setAiResponseText(null); setAiResponseSql(null); setAiQueryResult(null); setSelectedSchemas([]); setSelectedBusinessRules([]);
+              try {
+                const payload: any = { prompt: aiPrompt, context: { activityId }, messages: [] };
+                const r = await fetch('/api/llm/generate_sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) });
+                if (!r.ok) {
+                  const t = await r.text(); alert('LLM request failed: ' + t); setAiLoading(false); return;
+                }
+                const j = await r.json();
+                setAiResponseText(j.thinking || null);
+                setAiResponseSql(j.sql || null);
+                setSelectedSchemas(j.selectedSchemas || []);
+                setSelectedBusinessRules(j.selectedBusinessRules || []);
+              } catch (e) { console.error(e); alert('LLM request error: ' + String(e)); }
+              finally { setAiLoading(false); }
+            }}>{aiLoading ? 'Thinking...' : 'Ask AI'}</Button>
+            {aiResponseSql && <Button variant="secondary" onClick={async () => {
+              try {
+                const r = await fetch('/api/execute_sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ sql: aiResponseSql }) });
+                if (!r.ok) { alert('Query failed: ' + await r.text()); return; }
+                const j = await r.json();
+                setAiQueryResult(j.rows || j);
+              } catch (e) { console.error(e); alert('Query execution error: ' + String(e)); }
+            }}>Run SQL (read-only)</Button>}
+            <Button variant="secondary" onClick={() => { setAiPrompt(''); setAiResponseText(null); setAiResponseSql(null); setAiQueryResult(null); setSelectedSchemas([]); setSelectedBusinessRules([]); }}>Clear</Button>
+          </div>
+
+          {aiResponseText && (
+            <div className="mt-3 p-3 bg-blue-50 border-l-4 border-blue-500 rounded">
+              <div className="font-semibold text-blue-900">🧠 Thinking</div>
+              <pre className="text-sm whitespace-pre-wrap mt-2 text-blue-800">{aiResponseText}</pre>
+            </div>
+          )}
+          {aiResponseSql && (
+            <div className="mt-3 p-3 bg-white border rounded">
+              <div className="font-medium">Generated SQL</div>
+              <pre className="text-sm whitespace-pre-wrap mt-1 bg-gray-50 p-2 rounded font-mono">{aiResponseSql}</pre>
+            </div>
+          )}
+          {aiQueryResult && (
+            <div className="mt-3 p-3 bg-white border rounded">
+              <div className="font-medium">Query Result (preview)</div>
+              <div className="mt-2 overflow-auto max-h-48">
+                <pre className="text-sm whitespace-pre-wrap">{JSON.stringify(aiQueryResult, null, 2)}</pre>
+              </div>
+            </div>
+          )}
+
+          {(selectedSchemas.length > 0 || selectedBusinessRules.length > 0) && (
+            <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded">
+              <div className="font-semibold text-amber-900 mb-2">📊 Selected RAG Schemas & Context</div>
+              
+              {selectedSchemas.length > 0 && (
+                <div className="mb-2">
+                  <div className="text-sm font-medium text-amber-900">Tables Used:</div>
+                  <div className="text-sm text-amber-800 ml-2 mt-1">
+                    {selectedSchemas.map((table, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <span className="inline-block w-2 h-2 bg-amber-600 rounded-full"></span>
+                        {table}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {selectedBusinessRules.length > 0 && (
+                <div>
+                  <div className="text-sm font-medium text-amber-900">Business Rules Applied:</div>
+                  <div className="text-sm text-amber-800 ml-2 mt-1 space-y-1">
+                    {selectedBusinessRules.map((rule, idx) => (
+                      <div key={idx} className="bg-amber-100 p-1 rounded text-xs">
+                        <span className="font-medium">{rule.table}:</span> {rule.rules}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </Card>
 

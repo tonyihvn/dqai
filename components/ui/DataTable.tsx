@@ -119,7 +119,7 @@ export default function DataTable<T extends Record<string, any>>({ columns, data
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {filtered.map((row, rIdx) => (
-              <tr key={rIdx}>
+              <tr key={rIdx} data-row-index={rIdx}>
                 {visibleColumns.map(col => (
                   <td key={col.key} className="px-2 py-2 align-top text-sm">
                     {col.editable && onCellEdit ? (

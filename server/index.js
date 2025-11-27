@@ -10,6 +10,9 @@ import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import puppeteer from 'puppeteer';
+import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
+import { MemoryVectorStore } from 'langchain/vectorstores/memory';
+import { OpenAIEmbeddings } from '@langchain/openai';
 dotenv.config();
 
 const app = express();
@@ -117,65 +120,232 @@ function truncateSampleRows(rows) {
     });
 }
 
+/**
+ * Intelligent schema selector using semantic similarity and domain-specific heuristics
+ * Analyzes prompt text to intelligently select the most relevant RAG schemas
+ * Scoring factors:
+ * 1. Semantic similarity (prompt keywords in schema names, descriptions, business rules)
+ * 2. Domain-specific pattern matching (query intent analysis)
+ * 3. Relationship inference (join hints from explicit mentions)
+ * 4. Compulsory schema prioritization
+ */
+async function selectOptimalSchemas(prompt, ragRows) {
+    try {
+        // Always include compulsory schemas
+        let compulsoryRags = (ragRows || []).filter(rr => String(rr.category || '').toLowerCase() === 'compulsory');
+        if (!compulsoryRags || compulsoryRags.length === 0) {
+            const coreNames = ['dqai_activity_reports', 'dqai_answers', 'dqai_questions'];
+            compulsoryRags = ragRows.filter(rr => coreNames.includes(((rr.table_name || '')).toString()));
+        }
+
+        const lowerPrompt = String(prompt).toLowerCase();
+        const tokens = (lowerPrompt.match(/\w+/g) || []).filter(t => t.length > 2); // Filter out common 2-letter words
+
+        // Detect query intent/domain from prompt
+        const queryIntent = {
+            isScoreQuery: /\b(total|overall|score|sum|average|avg|mean|count|highest|lowest|best|worst)\b/.test(lowerPrompt),
+            isProgramQuery: /\b(program|project|campaign|initiative)\b/.test(lowerPrompt),
+            isActivityQuery: /\b(activity|activities|session|session|task|exercise|event)\b/.test(lowerPrompt),
+            isUserQuery: /\b(user|users|admin|staff|team|person|people|participant|respondent)\b/.test(lowerPrompt),
+            isFacilityQuery: /\b(facility|facilities|location|site|centre|center)\b/.test(lowerPrompt),
+            isReportQuery: /\b(report|reports|analytics|analysis|dashboard|metric|metrics)\b/.test(lowerPrompt),
+            isAnswerQuery: /\b(answer|answers|response|responses|question|questions|feedback)\b/.test(lowerPrompt),
+            isComparisonQuery: /\b(compare|comparison|vs|versus|difference|similar|like|between|across)\b/.test(lowerPrompt),
+            isTimeSeriesQuery: /\b(over time|trend|timeline|year|month|week|day|date|when|before|after)\b/.test(lowerPrompt),
+            isAggregationQuery: /\b(by|group by|grouped|per|each|breakdown|distributed)\b/.test(lowerPrompt),
+        };
+
+        // Score each schema based on multiple factors
+        const scored = ragRows.map(r => {
+            const table = (r.table_name || '').toString().toLowerCase();
+            const summary = (r.summary_text || '').toString().toLowerCase();
+            const businessRules = (r.business_rules || '').toString().toLowerCase();
+            const cols = (r.schema || []).map(c => (c.column_name || c.name || '').toString().toLowerCase());
+            const colStr = cols.join(' ');
+
+            let score = 0;
+            let matchedTokens = 0;
+
+            // ===== SEMANTIC TOKEN MATCHING =====
+            // Exact and fuzzy token matches in table name, summary, business rules
+            for (const t of tokens) {
+                if (!t || t.length < 2) continue;
+
+                // Table name matching (highest priority)
+                if (table === t) { score += 25; matchedTokens++; }
+                else if (table.includes(t)) { score += 15; matchedTokens++; }
+
+                // Column name matching
+                for (const c of cols) {
+                    if (c === t) { score += 8; matchedTokens++; }
+                    else if (c.includes(t) || t.includes(c.substring(0, Math.floor(c.length * 0.7)))) { score += 3; }
+                }
+
+                // Summary matching (description of what table contains)
+                if (summary && summary.includes(t)) { score += 6; }
+
+                // Business rules matching
+                if (businessRules && businessRules.includes(t)) { score += 5; }
+            }
+
+            // ===== DOMAIN-SPECIFIC INTENT MATCHING =====
+            // Boost schemas based on detected query intent
+            if (queryIntent.isScoreQuery) {
+                if (cols.some(c => c.includes('score'))) { score += 80; }
+                if (cols.some(c => c.includes('overall'))) { score += 60; }
+                if (cols.some(c => c.includes('answer'))) { score += 40; }
+                if (table.includes('answer') || table.includes('report')) { score += 35; }
+            }
+
+            if (queryIntent.isProgramQuery) {
+                if (table.includes('program') || table.includes('project')) { score += 70; }
+                if (cols.some(c => c.includes('program'))) { score += 40; }
+            }
+
+            if (queryIntent.isActivityQuery) {
+                if (table.includes('activity') || table.includes('session') || table.includes('task')) { score += 70; }
+                if (cols.some(c => c.includes('activity'))) { score += 40; }
+            }
+
+            if (queryIntent.isUserQuery) {
+                if (table.includes('user') || table.includes('staff') || table.includes('admin') || table.includes('team')) { score += 65; }
+            }
+
+            if (queryIntent.isFacilityQuery) {
+                if (table.includes('facility') || table.includes('location') || table.includes('site')) { score += 65; }
+            }
+
+            if (queryIntent.isReportQuery) {
+                if (table.includes('report') || table.includes('answer') || table.includes('activity')) { score += 50; }
+                if (cols.some(c => c.includes('metric') || c.includes('total'))) { score += 30; }
+            }
+
+            if (queryIntent.isAnswerQuery) {
+                if (table.includes('answer') || table.includes('question') || table.includes('response')) { score += 70; }
+                if (cols.some(c => c.includes('answer') || c.includes('response'))) { score += 40; }
+            }
+
+            if (queryIntent.isAggregationQuery) {
+                if (cols.some(c => c.includes('count') || c.includes('total') || c.includes('sum') || c.includes('average'))) { score += 40; }
+            }
+
+            // ===== RELATIONSHIP INFERENCE =====
+            // Boost tables likely needed for joins based on explicit mentions
+            if (lowerPrompt.includes('by') || lowerPrompt.includes('group')) {
+                if (table.includes('user') || table.includes('program') || table.includes('facility')) { score += 20; }
+            }
+
+            // ===== COMPULSORY BOOST =====
+            if (compulsoryRags.some(cr => cr.table_name === r.table_name)) {
+                score += 30; // Ensure compulsory tables are always included but allow better matches to rank higher
+            }
+
+            return { 
+                r, 
+                score, 
+                matchedTokens,
+                intent: queryIntent
+            };
+        });
+
+        // Sort by score, then by matched tokens
+        scored.sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            return b.matchedTokens - a.matchedTokens;
+        });
+
+        // Select top schemas with diversity
+        const selected = [];
+        const selectedTableNames = new Set();
+
+        // Always include compulsory schemas
+        for (const item of scored) {
+            if (compulsoryRags.some(cr => cr.table_name === item.r.table_name)) {
+                selected.push(item.r);
+                selectedTableNames.add(item.r.table_name);
+            }
+        }
+
+        // Add highest scoring non-compulsory schemas (up to 4 total, max 3 additional)
+        for (const item of scored) {
+            if (selected.length >= 4) break;
+            if (!selectedTableNames.has(item.r.table_name) && item.score > 5) {
+                selected.push(item.r);
+                selectedTableNames.add(item.r.table_name);
+            }
+        }
+
+        // If nothing was selected, pick the top scorers
+        if (selected.length === 0) {
+            for (const item of scored.slice(0, 3)) {
+                if (!selectedTableNames.has(item.r.table_name)) {
+                    selected.push(item.r);
+                    selectedTableNames.add(item.r.table_name);
+                }
+            }
+        }
+
+        console.log(`[Schema Selection] Prompt: "${prompt.substring(0, 80)}..."`);
+        console.log(`[Schema Selection] Intent: ${JSON.stringify(queryIntent)}`);
+        console.log(`[Schema Selection] Selected: ${selected.map(s => s.table_name).join(', ')}`);
+        console.log(`[Schema Selection] Top scores: ${scored.slice(0, 5).map(s => `${s.r.table_name}:${s.score}`).join(', ')}`);
+
+        return {
+            best: scored[0]?.r,
+            selected: selected.length > 0 ? selected : [scored[0]?.r].filter(Boolean),
+            compulsory: compulsoryRags,
+            scores: scored.slice(0, 10).map(s => ({ table: s.r.table_name, score: s.score, intent: s.intent }))
+        };
+    } catch (e) {
+        console.error('selectOptimalSchemas error:', e);
+        // Fallback: return first schema and all compulsory
+        const compulsoryRags = (ragRows || []).filter(rr => String(rr.category || '').toLowerCase() === 'compulsory');
+        return {
+            best: ragRows[0],
+            selected: ragRows.slice(0, 1),
+            compulsory: compulsoryRags,
+            scores: []
+        };
+    }
+}
+
 app.post('/api/llm/generate_sql', async (req, res) => {
     try {
-        const { prompt, context, scope, providerId } = req.body || {};
+        const { prompt, context, scope, providerId, messages } = req.body || {};
         if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+        // Combine prior conversation messages (if any) with the current prompt to provide memory/context
+        let combinedPrompt = String(prompt);
+        try {
+            if (Array.isArray(messages) && messages.length) {
+                const hist = messages.map(m => `${m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : 'System'}: ${m.text}`).join('\n');
+                combinedPrompt = hist + '\nUser: ' + combinedPrompt;
+            }
+        } catch (e) { /* ignore */ }
 
         const rres = await pool.query('SELECT * FROM dqai_rag_schemas');
         const ragRows = rres.rows || [];
 
-        const tokens = (String(prompt).toLowerCase().match(/\w+/g) || []);
-        const lowerPrompt = String(prompt).toLowerCase();
-        const scored = ragRows.map(r => {
-            const table = (r.table_name || '').toString().toLowerCase();
-            const cols = (r.schema || []).map(c => (c.column_name || c.name || '').toString().toLowerCase());
-            let score = 0;
-            for (const t of tokens) {
-                if (!t) continue;
-                if (table === t) score += 10; // exact table name match
-                else if (table.includes(t)) score += 5; // table name contains token
-                for (const c of cols) {
-                    if (c === t) score += 3;
-                    else if (c.includes(t)) score += 1;
-                }
-            }
-            // Heuristics for statistical/score queries: boost schemas that contain score-like columns
-            try {
-                if (/\b(total|total score|overall score|score|sum|average|avg|mean)\b/.test(lowerPrompt)) {
-                    const lowCols = cols;
-                    if (lowCols.includes('overall_score') || lowCols.includes('overallscore')) score += 80;
-                    if (lowCols.includes('score') || lowCols.includes('scores') || lowCols.includes('score_value')) score += 50;
-                    if (lowCols.some(c => c.includes('answer') || c.includes('answer_value') || c.includes('answers'))) score += 40;
-                    if (table.includes('report')) score += 30;
-                    if (table.includes('answer') || table.includes('answers')) score += 30;
-                }
-            } catch (e) { }
-            return { r, score, cols };
-        });
+        // Use intelligent schema selector
+        const schemaSelection = await selectOptimalSchemas(combinedPrompt, ragRows);
+        const best = schemaSelection.best;
+        const selectedSchemas = schemaSelection.selected;
+        const compulsoryRags = schemaSelection.compulsory;
 
-        scored.sort((a, b) => (b.score - a.score));
-        const best = scored[0];
-        if (!best || best.score <= 0) {
+        if (!best || !selectedSchemas || selectedSchemas.length === 0) {
             const available = ragRows.map(rr => rr.table_name).filter(Boolean).slice(0, 50);
-            return res.json({ text: `I couldn't confidently match your request to any table schema. Please clarify which table/fields you mean. Available tables: ${available.join(', ')}` });
+            return res.json({ 
+                text: `I couldn't confidently match your request to any table schema. Please clarify which table/fields you mean. Available tables: ${available.join(', ')}`,
+                selectedSchemas: [],
+                selectedBusinessRules: []
+            });
         }
 
-        // Choose the table to use (allow keyword-driven overrides)
-        let tableName = best.r.table_name;
-        let overrideNote = '';
-        try {
-            const wantsProgram = tokens.some(t => t === 'program' || t === 'programs');
-            if (wantsProgram) {
-                const progRow = ragRows.find(rr => ((rr.table_name || '').toString().toLowerCase().includes('program')));
-                if (progRow) {
-                    tableName = progRow.table_name;
-                    overrideNote = `Overrode initial match because prompt explicitly mentions programs; using table "${tableName}" from RAG records.`;
-                }
-            }
-        } catch (e) { /* ignore */ }
-
-        const chosenRow = ragRows.find(rr => (rr.table_name || '') === tableName) || best.r;
+        // Choose the primary table to use
+        let tableName = best.table_name;
+        const chosenRow = selectedSchemas.find(rr => (rr.table_name || '') === tableName) || best;
+        
+        // Re-extract tokens for column matching
+        const tokens = (String(combinedPrompt).toLowerCase().match(/\w+/g) || []);
         const matchedCols = [];
         for (const c of (chosenRow.schema || [])) {
             const cname = (c.column_name || c.name || '').toString();
@@ -184,14 +354,9 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         }
 
         // Include any RAG records marked as 'Compulsory' into the LLM context so the model always sees them
-        let compulsoryRags = (ragRows || []).filter(rr => String(rr.category || '').toLowerCase() === 'compulsory');
-        // If no explicit compulsory entries exist, prefer core tables that are likely required for SQL generation
-        if (!compulsoryRags || compulsoryRags.length === 0) {
-            const coreNames = ['dqai_activity_reports', 'dqai_answers', 'dqai_questions'];
-            compulsoryRags = ragRows.filter(rr => coreNames.includes(((rr.table_name || '')).toString()));
-        }
+        // compulsoryRags already obtained from selectOptimalSchemas
         let compulsoryContext = '';
-        if (compulsoryRags.length) {
+        if (compulsoryRags && compulsoryRags.length) {
             // Prefer using a short human-readable summary if available
             compulsoryContext = compulsoryRags.map(cr => {
                 if (cr.summary_text && String(cr.summary_text).trim()) return `RAG Summary: ${String(cr.summary_text).trim()}${cr.business_rules ? '\nBusiness Rules: ' + cr.business_rules : ''}`;
@@ -212,7 +377,7 @@ app.post('/api/llm/generate_sql', async (req, res) => {
             summary_text: row.summary_text || null
         });
 
-        const chosenObj = buildRagObj(chosenRow || best.r);
+        const chosenObj = buildRagObj(chosenRow);
         const compulsoryObjs = (compulsoryRags || []).map(buildRagObj);
         const ragContextObj = { compulsory: compulsoryObjs, chosen: chosenObj };
         const ragContext = JSON.stringify(ragContextObj);
@@ -220,18 +385,41 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         let providerUsed = null;
         let providerResponse = null;
         try {
-            if (providerId) {
+                    // Build enriched prompt that includes RAG context and enforces "Thinking:" output
+                    const enrichedPrompt = `You are a SQL query assistant with access to the following database schemas and business rules.
+
+RAG SCHEMAS AND CONTEXT:
+${ragContext}
+
+INSTRUCTIONS:
+1. First, output "Thinking:" on its own line and think step-by-step about:
+   - Which table(s) from the RAG schemas are most relevant to the user's request
+   - What columns should be selected and any WHERE/GROUP BY/JOIN logic needed
+   - Business rules that apply to this query
+2. Then output "Action to Be Taken:" on its own line and provide:
+   - A single read-only SELECT SQL statement (NO INSERT/UPDATE/DELETE)
+   - SQL MUST use only tables and columns present in the RAG schemas above
+   - Use column names and table names exactly as shown in the schema
+   - Wrap all identifiers in double quotes for safety
+3. Format your response clearly with those two sections separated by newlines.
+
+USER REQUEST:
+${combinedPrompt}
+
+Remember: Always output "Thinking:" first, then "Action to Be Taken:". Use ONLY the schemas provided above.`;
+
+                    if (providerId) {
                 const pr = await pool.query('SELECT * FROM dqai_llm_providers WHERE id = $1', [providerId]);
                 if (pr.rows.length) {
                     const prov = pr.rows[0];
-                    providerResponse = await tryCallProvider(prov, prompt, ragContext);
+                            providerResponse = await tryCallProvider(prov, enrichedPrompt, ragContext);
                     if (providerResponse) providerUsed = prov.name || prov.provider_id;
                 }
             } else {
                 const pres = await pool.query('SELECT * FROM dqai_llm_providers ORDER BY priority ASC NULLS LAST');
                 for (const prov of pres.rows) {
                     try {
-                        const r = await tryCallProvider(prov, prompt, ragContext);
+                                const r = await tryCallProvider(prov, enrichedPrompt, ragContext);
                         if (r) { providerResponse = r; providerUsed = prov.name || prov.provider_id; break; }
                     } catch (e) { }
                 }
@@ -241,12 +429,49 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         if (providerResponse && (providerResponse.sql || providerResponse.text)) {
             const text = providerResponse.text || '';
             const sql = providerResponse.sql || '';
-            return res.json({ text, sql, ragTables: [tableName], matchedColumns: matchedCols, providerUsed });
+            // Parse thinking and action from response if present
+            let thinking = '';
+            let actionText = text;
+            try {
+                const thinkMatch = text.match(/Thinking:([\s\S]*?)(?:Action to Be Taken:|$)/i);
+                const actionMatch = text.match(/Action to Be Taken:([\s\S]*?)$/i);
+                if (thinkMatch && thinkMatch[1]) thinking = thinkMatch[1].trim();
+                if (actionMatch && actionMatch[1]) actionText = actionMatch[1].trim();
+            } catch (e) { /* ignore parse errors */ }
+
+            // Basic validation: ensure SQL references only tables/columns present in RAG context for safety
+            try {
+                const allowedTables = (ragRows || []).map(r => (r.table_name || '').toString().toLowerCase()).filter(Boolean);
+                const allowedCols = new Set(((chosenRow.schema || []).map(c => (c.column_name || c.name || '').toString())));
+                const referencedTables = Array.from(new Set((sql.match(/from\s+"?([a-zA-Z0-9_\.]+)"?/gi) || []).map(s => s.replace(/from\s+/i, '').replace(/"/g, '').trim().toLowerCase())));
+                const badTable = referencedTables.find(t => !allowedTables.includes(t) && !t.includes('.') );
+                if (badTable) {
+                    return res.json({ text: `The generated SQL references table "${badTable}" which is not present in the available RAG schemas. I will not return SQL that references unknown tables. Please clarify which table you mean or pick one of: ${allowedTables.join(', ')}` });
+                }
+                // Check columns simply by scanning quoted identifiers and bare words in SELECT clause
+                const colMatches = (sql.match(/select[\s\S]*?from/i) || [])[0] || '';
+                const quotedCols = Array.from(new Set((colMatches.match(/"([a-zA-Z0-9_]+)"/g) || []).map(s => s.replace(/"/g, ''))));
+                const badCol = quotedCols.find(c => !allowedCols.has(c) );
+                if (badCol) {
+                    return res.json({ text: `The generated SQL references column "${badCol}" which is not present in the selected table schema. I will not return SQL that references unknown columns. Please clarify which columns you want.` });
+                }
+            } catch (e) { /* if validation fails, fall back to sending generated SQL */ }
+
+            return res.json({ 
+                text: actionText, 
+                thinking, 
+                sql, 
+                ragTables: [tableName], 
+                matchedColumns: matchedCols, 
+                providerUsed,
+                selectedSchemas: selectedSchemas.map(s => s.table_name),
+                selectedBusinessRules: selectedSchemas.filter(s => s.business_rules).map(s => ({ table: s.table_name, rules: s.business_rules }))
+            });
         }
 
         const lower = String(prompt).toLowerCase();
         let sql = '';
-        const numericCol = (best.r.schema || []).find(c => /(int|numeric|decimal|real|double|smallint|bigint)/i.test(String(c.data_type || '')));
+        const numericCol = (best.schema || []).find(c => /(int|numeric|decimal|real|double|smallint|bigint)/i.test(String(c.data_type || '')));
 
         // A: average / mean requests
         if (/(average|avg|mean)/.test(lower) && numericCol) {
@@ -272,7 +497,7 @@ app.post('/api/llm/generate_sql', async (req, res) => {
                 if (whereMatch && whereMatch[1] && whereMatch[2]) {
                     // pattern matched as where <col> = <val>
                     const col = whereMatch[1]; const val = whereMatch[2];
-                    const hasCol = (best.r.schema || []).some(c => (c.column_name || c.name || '') === col);
+                    const hasCol = (best.schema || []).some(c => (c.column_name || c.name || '') === col);
                     if (hasCol) {
                         sql = `SELECT COUNT(*) as count FROM "${tableName}" WHERE "${col}" = '${String(val).replace(/'/g, "''")}'`;
                     }
@@ -286,7 +511,7 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         } else {
             let selectCols = [];
             if (matchedCols.length > 0) selectCols = matchedCols.slice(0, 10);
-            else selectCols = (best.r.schema || []).map(c => (c.column_name || c.name)).filter(Boolean).slice(0, 10);
+            else selectCols = (best.schema || []).map(c => (c.column_name || c.name)).filter(Boolean).slice(0, 10);
             const selectClause = (selectCols.length > 0) ? selectCols.map(c => `"${c}"`).join(', ') : '*';
             let where = '';
 
@@ -294,14 +519,14 @@ app.post('/api/llm/generate_sql', async (req, res) => {
             const whereMatch = prompt.match(/where\s+([a-zA-Z0-9_]+)\s*(=|is|:)\s*['"]?([^'"\n]+)['"]?/i);
             if (whereMatch) {
                 const col = whereMatch[1]; const val = whereMatch[3];
-                const hasCol = (best.r.schema || []).some(c => (c.column_name || c.name || '') === col);
+                const hasCol = (best.schema || []).some(c => (c.column_name || c.name || '') === col);
                 if (hasCol) where = ` WHERE "${col}" = '${String(val).replace(/'/g, "''")}'`;
             } else {
                 // try "for <value>" or "in <value>" and match to a text column
                 const forMatch = prompt.match(/(?:for|in)\s+['"]?([^'"\n]+)['"]?/i);
                 if (forMatch) {
                     const val = forMatch[1].trim();
-                    const textCol = (best.r.schema || []).find(c => /(char|text|varchar)/i.test(String(c.data_type || '')));
+                    const textCol = (best.schema || []).find(c => /(char|text|varchar)/i.test(String(c.data_type || '')));
                     if (textCol) where = ` WHERE "${textCol.column_name || textCol.name}" ILIKE '%${String(val).replace(/'/g, "''")}%'`;
                 }
             }
@@ -314,7 +539,7 @@ app.post('/api/llm/generate_sql', async (req, res) => {
                     // try to find a likely program name column in the program table
                     const progSchema = programTable.schema || [];
                     const progNameCol = (progSchema.find(c => /(name|title|program)/i.test(String(c.column_name || c.name || ''))) || {}).column_name || (progSchema.find(c => /(name|title|program)/i.test(String(c.column_name || c.name || ''))) || {}).name;
-                    const textCol = (best.r.schema || []).find(c => /(char|text|varchar)/i.test(String(c.data_type || '')));
+                    const textCol = (best.schema || []).find(c => /(char|text|varchar)/i.test(String(c.data_type || '')));
                     if (progNameCol && textCol) {
                         // if user provided a program name, capture it
                         const progMatch = prompt.match(/(?:for|in)\s+['"]?([^'"\n]+)['"]?/i);
@@ -350,7 +575,15 @@ app.post('/api/llm/generate_sql', async (req, res) => {
 
         // Put Action on its own line and bold the SQL for clearer UI rendering
         const responseText = `${explanation}\n\nAction to Be Taken:\n**${sql}**`;
-        return res.json({ text: responseText, sql, ragTables: [tableName], matchedColumns: matchedCols, providerUsed });
+        return res.json({ 
+            text: responseText, 
+            sql, 
+            ragTables: [tableName], 
+            matchedColumns: matchedCols, 
+            providerUsed,
+            selectedSchemas: selectedSchemas.map(s => s.table_name),
+            selectedBusinessRules: selectedSchemas.filter(s => s.business_rules).map(s => ({ table: s.table_name, rules: s.business_rules }))
+        });
 
     } catch (e) {
         console.error('LLM/generate_sql error', e);
@@ -841,6 +1074,23 @@ async function initDb() {
             created_by INTEGER,
             created_at TIMESTAMP DEFAULT NOW()
         )`
+        , `CREATE TABLE IF NOT EXISTS dqai_api_connectors (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            base_url TEXT,
+            method TEXT DEFAULT 'GET',
+            auth_config JSONB,
+            expected_format TEXT,
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT NOW()
+        )`
+        , `CREATE TABLE IF NOT EXISTS dqai_api_ingests (
+            id SERIAL PRIMARY KEY,
+            connector_id INTEGER REFERENCES dqai_api_connectors(id) ON DELETE SET NULL,
+            received_at TIMESTAMP DEFAULT NOW(),
+            raw_data JSONB,
+            metadata JSONB
+        )`
     ];
 
     for (const q of queries) {
@@ -857,6 +1107,8 @@ async function initDb() {
         await pool.query(`ALTER TABLE dqai_answers ADD COLUMN IF NOT EXISTS quality_improvement_followup TEXT`);
         await pool.query(`ALTER TABLE dqai_answers ADD COLUMN IF NOT EXISTS score NUMERIC`);
         await pool.query(`ALTER TABLE dqai_questions ADD COLUMN IF NOT EXISTS required BOOLEAN`);
+        // allow storing a correct answer for question types that support it
+        await pool.query(`ALTER TABLE dqai_questions ADD COLUMN IF NOT EXISTS correct_answer TEXT`);
         // Add profile_image to users
         await pool.query(`ALTER TABLE dqai_users ADD COLUMN IF NOT EXISTS profile_image TEXT`);
         // Add powerbi_url and related columns to activities to support activity-level Power BI embeds
@@ -1748,31 +2000,32 @@ app.post('/api/admin/settings', requireAdmin, async (req, res) => {
 
 // Admin: detect local Ollama models (server-side probe to avoid CORS issues)
 app.get('/api/admin/detect-ollama', requireAdmin, async (req, res) => {
-    const endpoints = [
-        'http://127.0.0.1:11434/models',
-        'http://127.0.0.1:11434/list',
-        'http://127.0.0.1:11434/v1/models',
-        'http://127.0.0.1:11434/llms',
-        'http://localhost:11434/models',
-        'http://localhost:11434/list',
-        'http://localhost:11434/v1/models',
-        'http://[::1]:11434/models',
-        'https://127.0.0.1:11434/models',
-        'https://localhost:11434/models'
-    ];
+    // Only probe the supported Ollama endpoints for listing models and version
+    const hosts = [ '127.0.0.1', 'localhost', '::1' ];
+    const ports = [11434];
+    const paths = ['/api/tags', '/api/version'];
     try {
-        for (const url of endpoints) {
-            try {
-                const r = await fetch(url, { method: 'GET' });
-                if (!r.ok) continue;
-                const j = await r.json();
-                let found = [];
-                if (Array.isArray(j)) found = j.map(m => m.name || m.id || m.model || String(m));
-                else if (j.models && Array.isArray(j.models)) found = j.models.map(m => m.name || m.id || m.model || String(m));
-                else if (j.model) found = [j.model];
-                if (found.length) return res.json({ ok: true, models: found, url });
-            } catch (e) {
-                // try next
+        for (const h of hosts) {
+            for (const p of ports) {
+                for (const pa of paths) {
+                    const url = `http://${h}:${p}${pa}`;
+                    try {
+                        const r = await fetch(url, { method: 'GET' });
+                        if (!r.ok) continue;
+                        const j = await r.json();
+                        // /api/tags returns { models: [...] }
+                        if (pa === '/api/tags' && j && Array.isArray(j.models) && j.models.length) {
+                            const found = j.models.map(m => m.name || m.id || String(m));
+                            return res.json({ ok: true, models: found, url });
+                        }
+                        // /api/version returns version info; return if present
+                        if (pa === '/api/version' && j && (j.version || j.build)) {
+                            return res.json({ ok: true, version: j, url });
+                        }
+                    } catch (e) {
+                        // try next
+                    }
+                }
             }
         }
         return res.status(404).json({ ok: false, models: [] });
@@ -1951,28 +2204,29 @@ if (allowPublicAdmin) {
 
     // Public detect-ollama endpoint (dev only)
     app.get('/api/detect-ollama', async (req, res) => {
-        const endpoints = [
-            'http://127.0.0.1:11434/models',
-            'http://127.0.0.1:11434/list',
-            'http://127.0.0.1:11434/v1/models',
-            'http://127.0.0.1:11434/llms',
-            'http://localhost:11434/models',
-            'http://localhost:11434/list',
-            'http://localhost:11434/v1/models',
-            'http://[::1]:11434/models'
-        ];
+        // Only probe the supported Ollama endpoints on localhost
+        const hosts = [ '127.0.0.1', 'localhost', '::1' ];
+        const ports = [11434];
+        const paths = ['/api/tags', '/api/version'];
         try {
-            for (const url of endpoints) {
-                try {
-                    const r = await fetch(url, { method: 'GET' });
-                    if (!r.ok) continue;
-                    const j = await r.json();
-                    let found = [];
-                    if (Array.isArray(j)) found = j.map(m => m.name || m.id || m.model || String(m));
-                    else if (j.models && Array.isArray(j.models)) found = j.models.map(m => m.name || m.id || m.model || String(m));
-                    else if (j.model) found = [j.model];
-                    if (found.length) return res.json({ ok: true, models: found, url });
-                } catch (e) { /* continue */ }
+            for (const h of hosts) {
+                for (const p of ports) {
+                    for (const pa of paths) {
+                        const url = `http://${h}:${p}${pa}`;
+                        try {
+                            const r = await fetch(url, { method: 'GET' });
+                            if (!r.ok) continue;
+                            const j = await r.json();
+                            if (pa === '/api/tags' && j && Array.isArray(j.models) && j.models.length) {
+                                const found = j.models.map(m => m.name || m.id || String(m));
+                                return res.json({ ok: true, models: found, url });
+                            }
+                            if (pa === '/api/version' && j && (j.version || j.build)) {
+                                return res.json({ ok: true, version: j, url });
+                            }
+                        } catch (e) { /* try next */ }
+                    }
+                }
             }
             return res.status(404).json({ ok: false, models: [] });
         } catch (e) { console.error('public detect-ollama error', e); return res.status(500).json({ ok: false, error: String(e) }); }
@@ -2558,12 +2812,50 @@ app.post('/api/audit/bulk', async (req, res) => {
     }
 });
 
+// Admin: list audit batches (detailed)
+app.get('/api/admin/audit_batches', requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query('SELECT ab.*, u.email as user_email FROM dqai_audit_batches ab LEFT JOIN dqai_users u ON u.id = ab.user_id ORDER BY ab.created_at DESC');
+        // project rows into a friendly shape for frontend
+        const out = (r.rows || []).map(row => ({
+            id: row.id,
+            user_id: row.user_id,
+            created_at: row.created_at,
+            created_by: row.user_email || null,
+            events: row.events || null,
+            batch_name: (Array.isArray(row.events) && row.events[0] && (row.events[0].batch || row.events[0].type)) ? (row.events[0].batch || row.events[0].type) : `batch_${row.id}`,
+            details: row.events || null,
+            status: (Array.isArray(row.events) && row.events[0] && row.events[0].status) ? row.events[0].status : null
+        }));
+        res.json(out);
+    } catch (e) { console.error('Failed to list audit batches (admin)', e); res.status(500).json({ error: 'Failed to list audit batches' }); }
+});
+
+// Public (dev): list recent audit batches (limited) - enabled by default for convenience
+app.get('/api/audit_batches', async (req, res) => {
+    try {
+        const limit = Number(req.query.limit || 200);
+        const r = await pool.query('SELECT ab.*, u.email as user_email FROM dqai_audit_batches ab LEFT JOIN dqai_users u ON u.id = ab.user_id ORDER BY ab.created_at DESC LIMIT $1', [limit]);
+        const out = (r.rows || []).map(row => ({
+            id: row.id,
+            user_id: row.user_id,
+            created_at: row.created_at,
+            created_by: row.user_email || null,
+            events: row.events || null,
+            batch_name: (Array.isArray(row.events) && row.events[0] && (row.events[0].batch || row.events[0].type)) ? (row.events[0].batch || row.events[0].type) : `batch_${row.id}`,
+            details: row.events || null,
+            status: (Array.isArray(row.events) && row.events[0] && row.events[0].status) ? row.events[0].status : null
+        }));
+        res.json(out);
+    } catch (e) { console.error('Failed to list audit batches (public)', e); res.status(500).json({ error: 'Failed to list audit batches' }); }
+});
+
 // Sync questions from either a form-definition object or a flat questions array into the `questions` table
 async function syncQuestions(activityId, formDefOrQuestions) {
     if (!activityId) return;
     try {
         await pool.query('DELETE FROM dqai_questions WHERE activity_id = $1', [activityId]);
-        const insertText = `INSERT INTO dqai_questions (id, activity_id, page_name, section_name, question_text, question_helper, answer_type, category, question_group, column_size, status, required, options, metadata, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`;
+        const insertText = `INSERT INTO dqai_questions (id, activity_id, page_name, section_name, question_text, question_helper, correct_answer, answer_type, category, question_group, column_size, status, required, options, metadata, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`;
 
         // If an array is provided, treat it as a flat list of question objects
         if (Array.isArray(formDefOrQuestions)) {
@@ -2580,10 +2872,11 @@ async function syncQuestions(activityId, formDefOrQuestions) {
                 const status = q.status || 'Active';
                 const options = q.options ? JSON.stringify(q.options) : null;
                 const metadata = q.metadata ? JSON.stringify(q.metadata) : null;
+                const correctAnswer = q.correctAnswer || q.correct_answer || q.correct || null;
                 let createdBy = q.createdBy || q.created_by || null;
                 // coerce createdBy to integer id or null to avoid invalid input syntax errors
                 const createdByParam = (createdBy === null || createdBy === undefined) ? null : (Number.isInteger(Number(createdBy)) ? Number(createdBy) : null);
-                await pool.query(insertText, [qId, activityId, pageName, sectionName, questionText, questionHelper, answerType, category, questionGroup, columnSize, status, q.required || false, options, metadata, createdByParam]);
+                await pool.query(insertText, [qId, activityId, pageName, sectionName, questionText, questionHelper, correctAnswer, answerType, category, questionGroup, columnSize, status, q.required || false, options, metadata, createdByParam]);
             }
             return;
         }
@@ -2605,9 +2898,10 @@ async function syncQuestions(activityId, formDefOrQuestions) {
                     const status = q.status || 'Active';
                     const options = q.options ? JSON.stringify(q.options) : null;
                     const metadata = q.metadata ? JSON.stringify(q.metadata) : null;
+                    const correctAnswer = q.correctAnswer || q.correct_answer || q.correct || null;
                     let createdBy = q.createdBy || null;
                     const createdByParam = (createdBy === null || createdBy === undefined) ? null : (Number.isInteger(Number(createdBy)) ? Number(createdBy) : null);
-                    await pool.query(insertText, [qId, activityId, pageName, sectionName, questionText, questionHelper, answerType, category, questionGroup, columnSize, status, q.required || false, options, metadata, createdByParam]);
+                    await pool.query(insertText, [qId, activityId, pageName, sectionName, questionText, questionHelper, correctAnswer, answerType, category, questionGroup, columnSize, status, q.required || false, options, metadata, createdByParam]);
                 }
             }
         }
@@ -3057,6 +3351,38 @@ app.get('/api/reports/:id/pdf', async (req, res) => {
             answersMap[String(a.question_id)] = (typeof a.answer_value === 'object') ? JSON.stringify(a.answer_value) : String(a.answer_value);
         }
 
+        // fetch facility and reporter user for display (if available)
+        let facility = null;
+        try {
+            if (report.facility_id) {
+                const fres = await pool.query('SELECT * FROM dqai_facilities WHERE id = $1', [report.facility_id]);
+                if (fres.rowCount > 0) facility = fres.rows[0];
+            }
+        } catch (e) { /* ignore */ }
+        let reportedByUser = null;
+        try {
+            if (report.reported_by) {
+                const ures = await pool.query('SELECT id, first_name, last_name, email FROM dqai_users WHERE id = $1', [report.reported_by]);
+                if (ures.rowCount > 0) reportedByUser = ures.rows[0];
+            }
+        } catch (e) { /* ignore */ }
+
+        // Helper to sanitize potentially heavy/unsafe HTML snippets (strip iframes/videos/objects/scripts and large data: URLs)
+        const sanitizeHtml = (raw) => {
+            if (!raw) return '';
+            try {
+                let s = String(raw || '');
+                s = s.replace(/<video[\s\S]*?<\/video>/gi, '');
+                s = s.replace(/<iframe[\s\S]*?<\/iframe>/gi, '');
+                s = s.replace(/<object[\s\S]*?<\/object>/gi, '');
+                s = s.replace(/<embed[\s\S]*?<\/embed>/gi, '');
+                s = s.replace(/<script[\s\S]*?<\/script>/gi, '');
+                // strip extremely large data URLs (over ~5k chars) from src attributes
+                s = s.replace(/src=(\"|\')(data:[^\"']{5000,})(\"|\')/gi, '');
+                return s;
+            } catch (e) { return String(raw || ''); }
+        };
+
         // Helper to escape HTML
         const escapeHtml = (s) => {
             if (s === null || s === undefined) return '';
@@ -3199,19 +3525,17 @@ app.get('/api/reports/:id/pdf', async (req, res) => {
             // no template — default tabular report with title/status/score/review and Power BI if configured
             const displayTitle = report.title || report.activity_title || (`Report ${report.id}`);
             html += `<h1>${escapeHtml(displayTitle)}</h1>`;
+            // include facility name if available
+            const facilityName = facility ? (facility.name || facility.facility_name || facility.name) : (report.facility_name || report.facility || '');
             html += `<p><strong>Report ID:</strong> ${escapeHtml(String(report.id))} &nbsp; <strong>Submitted:</strong> ${escapeHtml(new Date(report.submission_date).toLocaleString())}</p>`;
-            html += `<p><strong>Status:</strong> ${escapeHtml(report.status || '')} &nbsp; <strong>Overall Score:</strong> ${escapeHtml(String(report.overall_score || ''))}</p>`;
+            html += `<p><strong>Facility:</strong> ${escapeHtml(facilityName || '—')} &nbsp; <strong>Status:</strong> ${escapeHtml(report.status || '')} &nbsp; <strong>Overall Score:</strong> ${escapeHtml(String(report.overall_score || ''))}</p>`;
 
             // include Power BI embed or link (prefer report-level, fallback to activity-level)
             const pb = reportPowerbi || (activityPowerbi && activityPowerbi.powerbi_url ? { powerbi_link: activityPowerbi.powerbi_url, link_type: activityPowerbi.powerbi_link_type || null } : null);
             if (pb && pb.powerbi_link) {
                 const link = pb.powerbi_link;
-                // attempt to embed via iframe when possible, otherwise show the link
-                if (String(link).startsWith('http')) {
-                    html += `<div class="powerbi-embed"><strong>Power BI:</strong><div style="margin-top:8px;"><iframe src="${escapeHtml(link)}" style="width:100%;height:400px;border:0;" sandbox="allow-same-origin allow-scripts allow-forms"></iframe></div></div>`;
-                } else {
-                    html += `<div class="powerbi-embed"><strong>Power BI:</strong> <a href="${escapeHtml(link)}" target="_blank">Open Power BI</a></div>`;
-                }
+                // Do not embed iframes in server PDF (can break PDF rendering). Show a safe link instead.
+                html += `<div class="powerbi-embed"><strong>Power BI:</strong> <a href="${escapeHtml(link)}" target="_blank" rel="noreferrer">Open Power BI</a></div>`;
             }
 
             html += `<h2>Answers</h2><table><thead><tr><th>Page</th><th>Section</th><th>Question</th><th>Answer</th><th>Reviewer Comment</th><th>Followup</th></tr></thead><tbody>`;
@@ -3224,7 +3548,7 @@ app.get('/api/reports/:id/pdf', async (req, res) => {
                 html += `<tr><td>${escapeHtml(pageName)}</td><td>${escapeHtml(sectionName)}</td><td>${escapeHtml(questionText)}</td><td>${escapeHtml(ans)}</td><td>${escapeHtml(a.reviewers_comment || '')}</td><td>${escapeHtml(a.quality_improvement_followup || '')}</td></tr>`;
             }
             html += `</tbody></table>`;
-            const reviewersHtml = report.reviewers_report || report.reviewersReport || '';
+            const reviewersHtml = sanitizeHtml(report.reviewers_report || report.reviewersReport || '');
             html += `<h2>Reviewer's Report</h2>`;
             if (reviewersHtml && String(reviewersHtml).trim()) html += `<div>${reviewersHtml}</div>`; else html += `<div><em>No review available</em></div>`;
 
@@ -3629,6 +3953,169 @@ app.post('/api/template_uploads', async (req, res) => {
     }
 });
 
+// Accept base64 uploads tied to an activity. Body: { activityId, filename, contentBase64, mimeType }
+app.post('/api/activity_uploads', async (req, res) => {
+    try {
+        const { activityId, filename, contentBase64, mimeType } = req.body || {};
+        if (!activityId || !filename || !contentBase64) return res.status(400).send('Missing parameters');
+        const safeActivity = String(activityId).replace(/[^a-zA-Z0-9-_\.]/g, '_');
+        const folder = path.join(uploadsRoot, 'activity', String(safeActivity));
+        if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+        const ts = Date.now();
+        const ext = path.extname(filename) || '';
+        const baseName = path.basename(filename, ext).replace(/[^a-zA-Z0-9-_\.]/g, '_');
+        const savedName = `${ts}_${baseName}${ext}`;
+        const filePath = path.join(folder, savedName);
+        let base64 = contentBase64;
+        const comma = base64.indexOf(',');
+        if (comma !== -1) base64 = base64.slice(comma + 1);
+        const buf = Buffer.from(base64, 'base64');
+        fs.writeFileSync(filePath, buf);
+        const publicUrl = `${req.protocol}://${req.get('host')}/uploads/activity/${encodeURIComponent(String(safeActivity))}/${encodeURIComponent(savedName)}`;
+        try {
+            await pool.query('INSERT INTO dqai_uploaded_docs (activity_id, facility_id, user_id, uploaded_by, report_id, file_content, filename) VALUES ($1,$2,$3,$4,$5,$6,$7)', [activityId || null, null, null, req.session && req.session.userId ? req.session.userId : null, null, JSON.stringify({ url: publicUrl, mimeType: mimeType || null }), filename]);
+        } catch (e) {
+            console.warn('Failed to insert activity_uploads metadata into dqai_uploaded_docs', e && e.message ? e.message : e);
+        }
+        res.json({ url: publicUrl, path: filePath });
+    } catch (e) {
+        console.error('activity_uploads error', e);
+        res.status(500).send(e.message);
+    }
+});
+
+// API Connectors: CRUD and trigger ingest
+app.get('/api/api_connectors', async (req, res) => {
+    try {
+        const r = await pool.query('SELECT * FROM dqai_api_connectors ORDER BY id DESC');
+        res.json(r.rows);
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
+});
+
+app.post('/api/api_connectors', async (req, res) => {
+    try {
+        const { id, name, base_url, method, auth_config, expected_format } = req.body || {};
+        if (id) {
+            const up = await pool.query('UPDATE dqai_api_connectors SET name=$1, base_url=$2, method=$3, auth_config=$4, expected_format=$5 WHERE id=$6 RETURNING *', [name, base_url, method || 'GET', auth_config ? JSON.stringify(auth_config) : null, expected_format || null, id]);
+            return res.json(up.rows[0]);
+        }
+        const ins = await pool.query('INSERT INTO dqai_api_connectors (name, base_url, method, auth_config, expected_format, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *', [name, base_url, method || 'GET', auth_config ? JSON.stringify(auth_config) : null, expected_format || null, req.session && req.session.userId ? req.session.userId : null]);
+        res.json(ins.rows[0]);
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
+});
+
+app.get('/api/api_connectors/:id', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id) return res.status(400).send('Invalid id');
+        const r = await pool.query('SELECT * FROM dqai_api_connectors WHERE id = $1', [id]);
+        if (r.rowCount === 0) return res.status(404).send('Not found');
+        res.json(r.rows[0]);
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
+});
+
+app.delete('/api/api_connectors/:id', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id) return res.status(400).send('Invalid id');
+        await pool.query('DELETE FROM dqai_api_connectors WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
+});
+
+// Trigger a connector fetch and persist result into api_ingests table
+app.post('/api/api_connectors/:id/trigger', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id) return res.status(400).send('Invalid id');
+        const cr = await pool.query('SELECT * FROM dqai_api_connectors WHERE id = $1', [id]);
+        if (cr.rowCount === 0) return res.status(404).send('Connector not found');
+        const conn = cr.rows[0];
+        const fetch = globalThis.fetch || require('node-fetch');
+        const method = (conn.method || 'GET').toUpperCase();
+        const headers = { 'Accept': 'application/json' };
+        let body = null;
+        try {
+            const auth = conn.auth_config ? (typeof conn.auth_config === 'string' ? JSON.parse(conn.auth_config) : conn.auth_config) : null;
+            if (auth) {
+                if (auth.type === 'bearer' && auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+                if (auth.type === 'basic' && auth.username) headers['Authorization'] = 'Basic ' + Buffer.from(`${auth.username}:${auth.password || ''}`).toString('base64');
+            }
+        } catch (e) { /* ignore parse errors */ }
+        // Allow optional body in POST trigger
+        if (method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
+            body = JSON.stringify(req.body);
+            headers['Content-Type'] = 'application/json';
+        }
+                const r = await fetch(conn.base_url, { method, headers, body });
+                const text = await r.text();
+                let parsed = null;
+                try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
+                const meta = { status: r.status, statusText: r.statusText, url: conn.base_url };
+                // Upsert behavior: update latest ingest for this connector if exists, otherwise insert
+                try {
+                    const exist = await pool.query('SELECT id FROM dqai_api_ingests WHERE connector_id = $1 ORDER BY received_at DESC LIMIT 1', [id]);
+                    if (exist.rowCount > 0) {
+                        const ingestId = exist.rows[0].id;
+                        await pool.query('UPDATE dqai_api_ingests SET raw_data = $1, metadata = $2, received_at = NOW() WHERE id = $3', [JSON.stringify(parsed), JSON.stringify(meta), ingestId]);
+                        return res.json({ ok: true, status: r.status, data: parsed, ingestId });
+                    } else {
+                        const ins = await pool.query('INSERT INTO dqai_api_ingests (connector_id, raw_data, metadata) VALUES ($1,$2,$3) RETURNING id', [id, JSON.stringify(parsed), JSON.stringify(meta)]);
+                        return res.json({ ok: true, status: r.status, data: parsed, ingestId: ins.rows[0].id });
+                    }
+                } catch (e) {
+                    console.error('Failed to upsert api_ingest', e);
+                    // fallback to insert to avoid losing data
+                    await pool.query('INSERT INTO dqai_api_ingests (connector_id, raw_data, metadata) VALUES ($1,$2,$3)', [id, JSON.stringify(parsed), JSON.stringify(meta)]);
+                    return res.json({ ok: true, status: r.status, data: parsed });
+                }
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
+});
+
+// Delete an ingest by id
+app.delete('/api/api_ingests/:id', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id) return res.status(400).send('Invalid id');
+        await pool.query('DELETE FROM dqai_api_ingests WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (e) { console.error('Failed to delete ingest', e); res.status(500).send(e.message); }
+});
+
+// List ingests (optionally by connectorId)
+app.get('/api/api_ingests', async (req, res) => {
+    try {
+        const { connectorId } = req.query;
+        if (connectorId) {
+            const r = await pool.query('SELECT * FROM dqai_api_ingests WHERE connector_id = $1 ORDER BY received_at DESC', [connectorId]);
+            return res.json(r.rows);
+        }
+        const r = await pool.query('SELECT * FROM dqai_api_ingests ORDER BY received_at DESC');
+        res.json(r.rows);
+    } catch (e) { console.error(e); res.status(500).send(e.message); }
+});
+
+// Patch an ingest's raw_data (allow editing/saving transformed JSON from frontend)
+app.patch('/api/api_ingests/:id', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id) return res.status(400).json({ error: 'Invalid id' });
+        const payload = req.body || {};
+        if (!Object.prototype.hasOwnProperty.call(payload, 'raw_data')) return res.status(400).json({ error: 'Missing raw_data' });
+        let toStore = payload.raw_data;
+        // If raw_data is a string that contains JSON, attempt to parse so we store structured JSONB
+        if (typeof toStore === 'string') {
+            try { toStore = JSON.parse(toStore); } catch (e) { /* keep as string (will be stored as JSON string) */ }
+        }
+        const r = await pool.query('UPDATE dqai_api_ingests SET raw_data = $1, received_at = NOW() WHERE id = $2 RETURNING *', [toStore, id]);
+        if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
+        res.json(r.rows[0]);
+    } catch (e) {
+        console.error('Failed to update api_ingest', e);
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // Delete a report and its associated uploaded docs and media files
 app.delete('/api/reports/:id', async (req, res) => {
     const id = req.params.id;
@@ -3714,6 +4201,7 @@ app.get('/api/questions', async (req, res) => {
             sectionName: q.section_name,
             questionText: q.question_text,
             questionHelper: q.question_helper,
+            correctAnswer: q.correct_answer,
             answerType: q.answer_type,
             category: q.category,
             questionGroup: q.question_group,
@@ -3782,7 +4270,7 @@ app.get('/api/activity_dashboard/:activityId', async (req, res) => {
 app.put('/api/questions/:id', async (req, res) => {
     const { id } = req.params;
     const updates = req.body || {};
-    const allowed = ['status'];
+    const allowed = ['status', 'correct_answer', 'correctAnswer'];
     const setParts = [];
     const params = [];
     let idx = 1;

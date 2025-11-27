@@ -106,6 +106,8 @@ const RenderQuestion = ({ question, value, onChange }: { question: Question, val
                     displayValue = null;
                 }
             }
+
+                
             const isEmpty = displayValue === undefined || displayValue === null || displayValue === '';
             return (
                 <div className="bg-gray-100 border border-gray-200 rounded px-3 py-2 text-gray-700">
@@ -163,6 +165,7 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
     const [answers, setAnswers] = useState<Record<string, any>>({});
     const [formSubmitted, setFormSubmitted] = useState(false);
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+    const [uploadToFolder, setUploadToFolder] = useState<boolean>(false);
     const [activePageIndex, setActivePageIndex] = useState(0);
     const [editingReport, setEditingReport] = useState<ActivityReport | undefined>(undefined);
 
@@ -425,6 +428,8 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
 
         Array.from(files).forEach((file: File) => {
             const reader = new FileReader();
+            // also read a dataURL of the original file so we can upload raw file if requested
+            const readerDataUrl = new FileReader();
             reader.onload = async (evt) => {
                 try {
                     const buffer = evt.target?.result;
@@ -440,11 +445,18 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
                         });
                         data.push(rowData);
                     });
-                    setUploadedFiles(prev => [...prev, {
-                        id: `file-${Date.now()}-${file.name}`,
-                        fileName: file.name,
-                        data: data
-                    }]);
+                    // read dataURL of original file in parallel so we can optionally upload raw file later
+                    readerDataUrl.onload = (ev2) => {
+                        const dataUrl = ev2.target?.result as string;
+                        setUploadedFiles(prev => [...prev, {
+                            id: `file-${Date.now()}-${file.name}`,
+                            fileName: file.name,
+                            data: data,
+                            rawDataUrl: dataUrl,
+                            mimeType: file.type || undefined
+                        }]);
+                    };
+                    try { readerDataUrl.readAsDataURL(file); } catch (e) { /* ignore */ }
                 } catch (err) {
                     console.error("Error parsing file", err);
                     alert(`Could not parse ${file.name}. Please ensure it is a valid Excel file.`);
@@ -637,6 +649,13 @@ const FillFormPage: React.FC<FillFormPageProps> = ({ activityIdOverride, standal
                                     <p className="text-xs text-gray-500">Supports .xlsx, .xls, .csv</p>
                                 </div>
                             </div>
+                        </div>
+                        <div className="mt-3">
+                            <label className="inline-flex items-center">
+                                <input type="checkbox" className="mr-2" checked={uploadToFolder} onChange={e => setUploadToFolder(e.target.checked)} />
+                                <span className="text-sm text-gray-700">Upload files to server folder (do not parse into tables)</span>
+                            </label>
+                            <p className="text-xs text-gray-400">When checked, the selected Excel/CSV files will be uploaded as-is to the server and stored under the activity uploads folder.</p>
                         </div>
 
                         <div className="space-y-4">

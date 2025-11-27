@@ -12,14 +12,14 @@ const ConversationPanel: React.FC<{ context?: any, scope?: string }> = ({ contex
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<any>(null);
 
-  const sendMessage = async () => {
+    const sendMessage = async () => {
     if (!input) return;
     const m: Message = { role: 'user', text: input };
     setMessages(prev => [...prev, m]);
     setInput('');
     // Ask backend LLM to generate SQL (if endpoint exists)
     try {
-      const body: any = { prompt: input, context, scope };
+      const body: any = { prompt: input, context, scope, messages };
       if (selectedProvider && selectedProvider !== 'auto') body.providerId = selectedProvider;
       const res = await fetch('/api/llm/generate_sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (res.ok) {
