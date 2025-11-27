@@ -17,6 +17,8 @@ import FacilitiesPage from './pages/FacilitiesPage';
 import ProgramsPage from './pages/ProgramsPage';
 import LoginPage from './pages/LoginPage';
 import SettingsPage from './pages/SettingsPage';
+import RequestPasswordPage from './pages/RequestPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import ProfilePage from './pages/ProfilePage';
 import DocsPage from './pages/DocsPage';
 import ApiConnectorsPage from './pages/ApiConnectorsPage';
@@ -35,6 +37,8 @@ const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/request-reset" element={<RequestPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
 
       <Route path="/dashboard" element={<ProtectedRoute><Layout><DashboardPage /></Layout></ProtectedRoute>} />
 

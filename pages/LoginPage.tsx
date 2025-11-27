@@ -45,10 +45,11 @@ const LoginPage: React.FC = () => {
             </Button>
           </div>
         </form>
-
-        <div className="text-xs text-gray-500 mt-4 bg-blue-50 p-3 rounded border border-blue-200">
-          <strong>Dev Note:</strong> Use the default admin credentials from `.env.local` (DEFAULT_ADMIN_EMAIL / DEFAULT_ADMIN_PASSWORD) or create a user from the Users page.
+        <div className="flex items-center justify-between mt-2">
+          <a className="text-sm text-primary-600 hover:underline" href="#/request-reset">Forgot password?</a>
         </div>
+
+
       </div>
     </div>
   );

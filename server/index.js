@@ -1265,30 +1265,22 @@ async function initDb() {
             console.error('Failed to hash default admin password:', e);
             hashedAdminPassword = adminPassword; // fallback to plaintext (will be attempted to migrate on login)
         }
-        const res = await pool.query('SELECT * FROM dqai_users WHERE email = $1', [adminEmail]);
-        if (res.rows.length === 0) {
-            await pool.query(
-                'INSERT INTO dqai_users (first_name, last_name, email, password, role, status) VALUES ($1, $2, $3, $4, $5, $6)',
-                ['System', 'Administrator', adminEmail, hashedAdminPassword, 'Admin', 'Active']
-            );
-            console.log('Default admin user created:', adminEmail);
-        } else {
-            // If user exists but password is empty or null, set it to the default admin password
-            try {
-                const existing = res.rows[0];
-                if (!existing.password || String(existing.password).trim() === '') {
-                    try {
-                        await pool.query('UPDATE dqai_users SET password = $1 WHERE id = $2', [hashedAdminPassword, existing.id]);
-                        console.log('Default admin user existed with empty password; password was set (hashed) from env for:', adminEmail);
-                    } catch (ue) {
-                        console.error('Failed to update existing admin password with hashed value:', ue);
-                        // fallback to plain update
-                        await pool.query('UPDATE dqai_users SET password = $1 WHERE id = $2', [adminPassword, existing.id]);
-                    }
-                }
-            } catch (e) {
-                console.error('Failed to ensure default admin password:', e);
+        // Only create a default admin if no Admin user exists. This avoids overwriting
+        // or re-creating the default admin when an Admin account has been modified by the user.
+        try {
+            const adminsRes = await pool.query("SELECT u.id FROM dqai_users u WHERE u.role = 'Admin' OR u.id IN (SELECT ur.user_id FROM dqai_user_roles ur JOIN dqai_roles r ON ur.role_id = r.id WHERE LOWER(r.name) = 'admin') LIMIT 1");
+            if (!adminsRes.rows || adminsRes.rows.length === 0) {
+                // No admin user exists; create the default admin
+                await pool.query(
+                    'INSERT INTO dqai_users (first_name, last_name, email, password, role, status) VALUES ($1, $2, $3, $4, $5, $6)',
+                    ['System', 'Administrator', adminEmail, hashedAdminPassword, 'Admin', 'Active']
+                );
+                console.log('Default admin user created:', adminEmail);
+            } else {
+                console.log('Admin user(s) already exist; skipping default admin creation.');
             }
+        } catch (e) {
+            console.error('Failed to ensure default admin user safely:', e);
         }
     } catch (err) {
         console.error('Failed to ensure default admin user', err);
@@ -2007,7 +1999,7 @@ app.post('/auth/reset-password', async (req, res) => {
         const row = tres.rows[0];
         if (new Date(row.expires_at) < new Date()) return res.status(400).json({ ok: false, error: 'Token expired' });
         const hash = await bcrypt.hash(newPassword, 10);
-        await pool.query('UPDATE dqai_users SET dqai_password = $1 WHERE id = $2', [hash, row.user_id]);
+        await pool.query('UPDATE dqai_users SET password = $1 WHERE id = $2', [hash, row.user_id]);
         await pool.query('DELETE FROM dqai_password_resets WHERE token = $1', [token]);
         return res.json({ ok: true });
     } catch (e) { console.error('reset-password error', e); res.status(500).json({ ok: false, error: String(e) }); }
@@ -3292,6 +3284,24 @@ app.post('/api/users', async (req, res) => {
                 [firstName, lastName, email, role, status, hashedPassword || null, facilityId || null, profileImage || null, id]
             );
             const u = result.rows[0];
+            // send notification email if smtp configured
+            try {
+                const sres = await pool.query("SELECT value FROM dqai_settings WHERE key = 'smtp'");
+                const smtp = sres.rows[0] ? sres.rows[0].value : null;
+                if (smtp) {
+                    try {
+                        const nm = await import('nodemailer');
+                        const transporter = nm.createTransport(smtp);
+                        const adminList = (smtp.admins && Array.isArray(smtp.admins)) ? smtp.admins.join(',') : (smtp.admins || smtp.adminEmail || null);
+                        const toList = [u.email];
+                        if (adminList) toList.push(adminList);
+                        const subject = 'Account updated';
+                        const text = `Hello ${u.first_name || ''},\n\nYour account has been updated by an administrator. If you did not expect this, contact support.`;
+                        await transporter.sendMail({ from: smtp.from || smtp.user || 'no-reply@example.com', to: toList.join(','), subject, text });
+                    } catch (e) { console.error('Failed to send user-update email', e); }
+                }
+            } catch (e) { console.error('Failed to load smtp settings for user-update notification', e); }
+
             res.json({ id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, status: u.status, profileImage: u.profile_image || null });
         } else {
             const result = await pool.query(
@@ -3299,6 +3309,26 @@ app.post('/api/users', async (req, res) => {
                 [firstName, lastName, email, role, status, hashedPassword || null, facilityId || null, profileImage || null]
             );
             const u = result.rows[0];
+            // send welcome email if smtp configured
+            try {
+                const sres = await pool.query("SELECT value FROM dqai_settings WHERE key = 'smtp'");
+                const smtp = sres.rows[0] ? sres.rows[0].value : null;
+                if (smtp) {
+                    try {
+                        const nm = await import('nodemailer');
+                        const transporter = nm.createTransport(smtp);
+                        const adminList = (smtp.admins && Array.isArray(smtp.admins)) ? smtp.admins.join(',') : (smtp.admins || smtp.adminEmail || null);
+                        const toList = [u.email];
+                        if (adminList) toList.push(adminList);
+                        const subject = 'Account created';
+                        let text = `Hello ${u.first_name || ''},\n\nAn account has been created for you.`;
+                        if (!password) text += '\n\nNo password was provided. You can set a password using the password reset flow.';
+                        text += '\n\nIf you did not expect this, contact support.';
+                        await transporter.sendMail({ from: smtp.from || smtp.user || 'no-reply@example.com', to: toList.join(','), subject, text });
+                    } catch (e) { console.error('Failed to send user-create email', e); }
+                }
+            } catch (e) { console.error('Failed to load smtp settings for user-create notification', e); }
+
             res.json({ id: u.id, firstName: u.first_name, lastName: u.last_name, email: u.email, role: u.role, status: u.status, profileImage: u.profile_image || null });
         }
     } catch (e) { console.error(e); res.status(500).send(e.message); }

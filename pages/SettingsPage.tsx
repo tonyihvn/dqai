@@ -461,7 +461,7 @@ const PermissionsList: React.FC = () => {
 
 const SettingsPage: React.FC = () => {
     const { settings, setSettings, reset } = useTheme();
-    const [tab, setTab] = useState<'database' | 'llm' | 'rag' | 'theme' | 'app' | 'permissions' | 'datasets' | 'audit'>('theme');
+    const [tab, setTab] = useState<'database' | 'llm' | 'rag' | 'theme' | 'app' | 'permissions' | 'datasets' | 'audit' | 'email'>('theme');
     const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const f = e.target.files?.[0];
         if (!f) return;
@@ -541,6 +541,7 @@ const SettingsPage: React.FC = () => {
                     <button onClick={() => setTab('rag')} className={`px-3 py-2 rounded ${tab === 'rag' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>RAG</button>
                     <button onClick={() => setTab('theme')} className={`px-3 py-2 rounded ${tab === 'theme' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Theme</button>
                     <button onClick={() => setTab('app')} className={`px-3 py-2 rounded ${tab === 'app' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>App</button>
+                    <button onClick={() => setTab('email')} className={`px-3 py-2 rounded ${tab === 'email' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Email / SMTP</button>
                     <button onClick={() => setTab('datasets')} className={`px-3 py-2 rounded ${tab === 'datasets' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Datasets</button>
                     <button onClick={() => setTab('permissions')} className={`px-3 py-2 rounded ${tab === 'permissions' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Roles & Permissions</button>
                     <button onClick={() => setTab('audit')} className={`px-3 py-2 rounded ${tab === 'audit' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}>Audit Trails</button>
@@ -762,6 +763,16 @@ const SettingsPage: React.FC = () => {
                 </Card>
             )}
 
+            {tab === 'email' && (
+                <Card>
+                    <h3 className="text-lg font-medium mb-2">Email / SMTP Settings</h3>
+                    <div className="space-y-3">
+                        <p className="text-sm text-gray-500">Configure SMTP used for password resets and notifications.</p>
+                        <SMTPSettings />
+                    </div>
+                </Card>
+            )}
+
             {tab === 'datasets' && (
                 <Card>
                     <h3 className="text-lg font-medium mb-2">Datasets</h3>
@@ -805,6 +816,114 @@ const SettingsPage: React.FC = () => {
     );
 };
 
+function SMTPSettings() {
+    const [smtp, setSmtp] = useState<any>(null);
+    const [loading, setLoading] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [testing, setTesting] = useState(false);
+    const [testTo, setTestTo] = useState('');
+    const [showHelp, setShowHelp] = useState(false);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                let r = await fetch('/api/admin/smtp', { credentials: 'include' });
+                if (r.status === 401) r = await fetch('/api/smtp');
+                if (r.ok) setSmtp(await r.json());
+            } catch (e) { /* ignore */ }
+        })();
+    }, []);
+
+    const save = async () => {
+        setSaving(true);
+        try {
+            const r = await fetch('/api/admin/smtp', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(smtp || {}) });
+            if (!r.ok) return alert('Failed to save: ' + await r.text());
+            alert('Saved');
+        } catch (e) { alert('Save failed: ' + String(e)); }
+        setSaving(false);
+    };
+
+    const test = async () => {
+        setTesting(true);
+        try {
+            const payload = { to: testTo || ((smtp && smtp.from) ? smtp.from : ''), subject: 'Test email', text: 'Test message' };
+            const r = await fetch('/api/admin/test-smtp', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            if (!r.ok) return alert('Test failed: ' + await r.text());
+            alert('Test email sent');
+        } catch (e) { alert('Test failed: ' + String(e)); }
+        setTesting(false);
+    };
+
+    const applyGmailDefaults = () => {
+        setSmtp({ ...(smtp || {}), host: 'smtp.gmail.com', port: 465, secure: true, from: (smtp && smtp.user) ? smtp.user : (smtp && smtp.from) || '' });
+        setShowHelp(true);
+    };
+
+    return (
+        <div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">SMTP Host</label>
+                    <input className="mt-1 block w-full p-2 border rounded" value={(smtp && smtp.host) || ''} onChange={e => setSmtp({ ...(smtp || {}), host: e.target.value })} />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">Port</label>
+                    <input className="mt-1 block w-full p-2 border rounded" value={(smtp && smtp.port) || ''} onChange={e => setSmtp({ ...(smtp || {}), port: e.target.value })} />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">Secure (TLS)</label>
+                    <div className="mt-1"><input type="checkbox" checked={(smtp && smtp.secure) || false} onChange={e => setSmtp({ ...(smtp || {}), secure: e.target.checked })} /></div>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">User</label>
+                    <input className="mt-1 block w-full p-2 border rounded" value={(smtp && smtp.user) || ''} onChange={e => setSmtp({ ...(smtp || {}), user: e.target.value })} />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">Password</label>
+                    <input type="password" className="mt-1 block w-full p-2 border rounded" value={(smtp && smtp.pass) || ''} onChange={e => setSmtp({ ...(smtp || {}), pass: e.target.value })} />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">From address</label>
+                    <input className="mt-1 block w-full p-2 border rounded" value={(smtp && smtp.from) || ''} onChange={e => setSmtp({ ...(smtp || {}), from: e.target.value })} />
+                </div>
+                <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">Admin emails (comma separated)</label>
+                    <input className="mt-1 block w-full p-2 border rounded" value={(smtp && smtp.admins) ? (Array.isArray(smtp.admins) ? smtp.admins.join(',') : smtp.admins) : ''} onChange={e => {
+                        const v = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                        setSmtp({ ...(smtp || {}), admins: v });
+                    }} />
+                </div>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+                <Button onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save SMTP Settings'}</Button>
+                <Button variant="secondary" onClick={test} disabled={testing}>{testing ? 'Testing...' : 'Send test email'}</Button>
+                <Button variant="secondary" onClick={applyGmailDefaults}>Use Gmail defaults</Button>
+                <input className="p-2 border rounded" placeholder="Test recipient (optional)" value={testTo} onChange={e => setTestTo(e.target.value)} />
+            </div>
+
+            {/* Help / guidance for common providers (Gmail) */}
+            <div className="mt-3 text-sm text-gray-700">
+                <button className="text-sm text-primary-600 hover:underline" onClick={() => setShowHelp(s => !s)}>{showHelp ? 'Hide' : 'Show'} SMTP help</button>
+                {showHelp && (
+                    <div className="mt-2 p-3 bg-gray-50 border rounded text-sm text-gray-700">
+                        <div className="font-medium">Gmail (smtp.gmail.com) notes</div>
+                        <ul className="list-disc pl-5 mt-2">
+                            <li>For Gmail use <strong>Host</strong>: <code>smtp.gmail.com</code>.</li>
+                            <li>If using SSL set <strong>Port</strong> to <code>465</code> and <strong>Secure</strong> to true; for STARTTLS use port <code>587</code> and secure=false.</li>
+                            <li>If your Google account has 2-step verification enabled, create an <strong>App Password</strong> and use it as the SMTP password (recommended).</li>
+                            <li>Google blocks simple username/password auth for many accounts; if you see <code>530 Authentication Required</code> obtain an App Password or use OAuth2.</li>
+                            <li>After saving settings click <strong>Send test email</strong> and check server logs for nodemailer errors.</li>
+                        </ul>
+                        <div className="mt-2 text-xs text-gray-500">See: <a className="text-primary-600 hover:underline" href="https://support.google.com/accounts/answer/185833" target="_blank" rel="noreferrer">Google App Passwords</a></div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 export default SettingsPage;
 
 const AuditTrails: React.FC = () => {
@@ -833,11 +952,13 @@ const AuditTrails: React.FC = () => {
         { key: 'created_by', label: 'By' },
         { key: 'status', label: 'Status' },
         { key: 'details', label: 'Details' },
-        { key: '__actions', label: '', render: (row: any) => (
-            <div className="flex items-center gap-2">
-              <button className="text-xs text-blue-600" onClick={() => { setJsonViewerContent(row.events || row.details || row); setJsonViewerOpen(true); }}>View</button>
-            </div>
-        ) }
+        {
+            key: '__actions', label: '', render: (row: any) => (
+                <div className="flex items-center gap-2">
+                    <button className="text-xs text-blue-600" onClick={() => { setJsonViewerContent(row.events || row.details || row); setJsonViewerOpen(true); }}>View</button>
+                </div>
+            )
+        }
     ];
 
     const data = (list || []).map((r: any) => ({
@@ -860,17 +981,17 @@ const AuditTrails: React.FC = () => {
             {loading && <div className="text-sm text-gray-500">Loading...</div>}
             {!loading && data.length === 0 && <div className="text-sm text-gray-500">No audit batches found.</div>}
             {!loading && data.length > 0 && (
-                                <>
-                                    <DataTable columns={columns} data={data} />
-                                    <Modal isOpen={jsonViewerOpen} onClose={() => setJsonViewerOpen(false)} title="Audit Events">
-                                        <div>
-                                            <pre className="whitespace-pre-wrap text-sm bg-gray-50 p-3 rounded" style={{ maxHeight: '60vh', overflow: 'auto' }}>{jsonViewerContent ? (typeof jsonViewerContent === 'string' ? jsonViewerContent : JSON.stringify(jsonViewerContent, null, 2)) : ''}</pre>
-                                            <div className="flex justify-end mt-2">
-                                                <Button onClick={() => setJsonViewerOpen(false)}>Close</Button>
-                                            </div>
-                                        </div>
-                                    </Modal>
-                                </>
+                <>
+                    <DataTable columns={columns} data={data} />
+                    <Modal isOpen={jsonViewerOpen} onClose={() => setJsonViewerOpen(false)} title="Audit Events">
+                        <div>
+                            <pre className="whitespace-pre-wrap text-sm bg-gray-50 p-3 rounded" style={{ maxHeight: '60vh', overflow: 'auto' }}>{jsonViewerContent ? (typeof jsonViewerContent === 'string' ? jsonViewerContent : JSON.stringify(jsonViewerContent, null, 2)) : ''}</pre>
+                            <div className="flex justify-end mt-2">
+                                <Button onClick={() => setJsonViewerOpen(false)}>Close</Button>
+                            </div>
+                        </div>
+                    </Modal>
+                </>
             )}
         </div>
     );
