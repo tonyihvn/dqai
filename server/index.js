@@ -21,8 +21,23 @@ const PORT = Number(process.env.SERVER_PORT || process.env.PORT) || 3000;
 const allowPublicAdmin = (process.env.ALLOW_PUBLIC_ADMIN === 'true') || (process.env.NODE_ENV !== 'production');
 
 // Middleware - MUST be registered before route handlers so req.body is available
-const frontendPort = Number(process.env.FRONTEND_PORT) || 5173;
-app.use(cors({ origin: `http://localhost:${frontendPort}`, credentials: true }));
+// Accept localhost origins on any port for local development. Use a dynamic origin
+// function so the server echoes back the incoming origin (e.g., http://localhost:9090)
+const frontendPort = process.env.FRONTEND_PORT ? Number(process.env.FRONTEND_PORT) : undefined;
+app.use(cors({
+    origin: (origin, callback) => {
+        // If no origin (e.g., server-to-server, curl), allow
+        if (!origin) return callback(null, true);
+        try {
+            const u = new URL(origin);
+            // allow localhost / 127.0.0.1 origins (any port)
+            if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return callback(null, origin);
+        } catch (e) { /* fallthrough */ }
+        // fallback: deny
+        return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Simple Session Setup (No Passport needed for dev mode)
@@ -4522,6 +4537,12 @@ app.post('/api/reports', async (req, res) => {
 // Initialize DB then start server
 initDb()
     .then(() => {
+        try {
+            console.log(`[startup] Configured SERVER_PORT=${PORT}`);
+            try { console.log(`[startup] Configured FRONTEND_PORT=${frontendPort}`); } catch (e) { }
+            const allowedOrigin = `http://localhost:${(typeof frontendPort !== 'undefined' ? frontendPort : (process.env.FRONTEND_PORT || 5173))}`;
+            console.log(`[startup] CORS allowed origin: ${allowedOrigin}`);
+        } catch (e) { }
         app.listen(PORT, () => {
             console.log(`Server running on port ${PORT}`);
         });
