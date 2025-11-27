@@ -16,12 +16,13 @@ import { OpenAIEmbeddings } from '@langchain/openai';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.SERVER_PORT || process.env.PORT) || 3000;
 // Allow public admin-like endpoints in development or when explicitly enabled
 const allowPublicAdmin = (process.env.ALLOW_PUBLIC_ADMIN === 'true') || (process.env.NODE_ENV !== 'production');
 
 // Middleware - MUST be registered before route handlers so req.body is available
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+const frontendPort = Number(process.env.FRONTEND_PORT) || 5173;
+app.use(cors({ origin: `http://localhost:${frontendPort}`, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Simple Session Setup (No Passport needed for dev mode)
@@ -240,9 +241,9 @@ async function selectOptimalSchemas(prompt, ragRows) {
                 score += 30; // Ensure compulsory tables are always included but allow better matches to rank higher
             }
 
-            return { 
-                r, 
-                score, 
+            return {
+                r,
+                score,
                 matchedTokens,
                 intent: queryIntent
             };
@@ -333,7 +334,7 @@ app.post('/api/llm/generate_sql', async (req, res) => {
 
         if (!best || !selectedSchemas || selectedSchemas.length === 0) {
             const available = ragRows.map(rr => rr.table_name).filter(Boolean).slice(0, 50);
-            return res.json({ 
+            return res.json({
                 text: `I couldn't confidently match your request to any table schema. Please clarify which table/fields you mean. Available tables: ${available.join(', ')}`,
                 selectedSchemas: [],
                 selectedBusinessRules: []
@@ -343,7 +344,7 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         // Choose the primary table to use
         let tableName = best.table_name;
         const chosenRow = selectedSchemas.find(rr => (rr.table_name || '') === tableName) || best;
-        
+
         // Re-extract tokens for column matching
         const tokens = (String(combinedPrompt).toLowerCase().match(/\w+/g) || []);
         const matchedCols = [];
@@ -385,8 +386,8 @@ app.post('/api/llm/generate_sql', async (req, res) => {
         let providerUsed = null;
         let providerResponse = null;
         try {
-                    // Build enriched prompt that includes RAG context and enforces "Thinking:" output
-                    const enrichedPrompt = `You are a SQL query assistant with access to the following database schemas and business rules.
+            // Build enriched prompt that includes RAG context and enforces "Thinking:" output
+            const enrichedPrompt = `You are a SQL query assistant with access to the following database schemas and business rules.
 
 RAG SCHEMAS AND CONTEXT:
 ${ragContext}
@@ -408,18 +409,18 @@ ${combinedPrompt}
 
 Remember: Always output "Thinking:" first, then "Action to Be Taken:". Use ONLY the schemas provided above.`;
 
-                    if (providerId) {
+            if (providerId) {
                 const pr = await pool.query('SELECT * FROM dqai_llm_providers WHERE id = $1', [providerId]);
                 if (pr.rows.length) {
                     const prov = pr.rows[0];
-                            providerResponse = await tryCallProvider(prov, enrichedPrompt, ragContext);
+                    providerResponse = await tryCallProvider(prov, enrichedPrompt, ragContext);
                     if (providerResponse) providerUsed = prov.name || prov.provider_id;
                 }
             } else {
                 const pres = await pool.query('SELECT * FROM dqai_llm_providers ORDER BY priority ASC NULLS LAST');
                 for (const prov of pres.rows) {
                     try {
-                                const r = await tryCallProvider(prov, enrichedPrompt, ragContext);
+                        const r = await tryCallProvider(prov, enrichedPrompt, ragContext);
                         if (r) { providerResponse = r; providerUsed = prov.name || prov.provider_id; break; }
                     } catch (e) { }
                 }
@@ -444,25 +445,25 @@ Remember: Always output "Thinking:" first, then "Action to Be Taken:". Use ONLY 
                 const allowedTables = (ragRows || []).map(r => (r.table_name || '').toString().toLowerCase()).filter(Boolean);
                 const allowedCols = new Set(((chosenRow.schema || []).map(c => (c.column_name || c.name || '').toString())));
                 const referencedTables = Array.from(new Set((sql.match(/from\s+"?([a-zA-Z0-9_\.]+)"?/gi) || []).map(s => s.replace(/from\s+/i, '').replace(/"/g, '').trim().toLowerCase())));
-                const badTable = referencedTables.find(t => !allowedTables.includes(t) && !t.includes('.') );
+                const badTable = referencedTables.find(t => !allowedTables.includes(t) && !t.includes('.'));
                 if (badTable) {
                     return res.json({ text: `The generated SQL references table "${badTable}" which is not present in the available RAG schemas. I will not return SQL that references unknown tables. Please clarify which table you mean or pick one of: ${allowedTables.join(', ')}` });
                 }
                 // Check columns simply by scanning quoted identifiers and bare words in SELECT clause
                 const colMatches = (sql.match(/select[\s\S]*?from/i) || [])[0] || '';
                 const quotedCols = Array.from(new Set((colMatches.match(/"([a-zA-Z0-9_]+)"/g) || []).map(s => s.replace(/"/g, ''))));
-                const badCol = quotedCols.find(c => !allowedCols.has(c) );
+                const badCol = quotedCols.find(c => !allowedCols.has(c));
                 if (badCol) {
                     return res.json({ text: `The generated SQL references column "${badCol}" which is not present in the selected table schema. I will not return SQL that references unknown columns. Please clarify which columns you want.` });
                 }
             } catch (e) { /* if validation fails, fall back to sending generated SQL */ }
 
-            return res.json({ 
-                text: actionText, 
-                thinking, 
-                sql, 
-                ragTables: [tableName], 
-                matchedColumns: matchedCols, 
+            return res.json({
+                text: actionText,
+                thinking,
+                sql,
+                ragTables: [tableName],
+                matchedColumns: matchedCols,
                 providerUsed,
                 selectedSchemas: selectedSchemas.map(s => s.table_name),
                 selectedBusinessRules: selectedSchemas.filter(s => s.business_rules).map(s => ({ table: s.table_name, rules: s.business_rules }))
@@ -575,11 +576,11 @@ Remember: Always output "Thinking:" first, then "Action to Be Taken:". Use ONLY 
 
         // Put Action on its own line and bold the SQL for clearer UI rendering
         const responseText = `${explanation}\n\nAction to Be Taken:\n**${sql}**`;
-        return res.json({ 
-            text: responseText, 
-            sql, 
-            ragTables: [tableName], 
-            matchedColumns: matchedCols, 
+        return res.json({
+            text: responseText,
+            sql,
+            ragTables: [tableName],
+            matchedColumns: matchedCols,
             providerUsed,
             selectedSchemas: selectedSchemas.map(s => s.table_name),
             selectedBusinessRules: selectedSchemas.filter(s => s.business_rules).map(s => ({ table: s.table_name, rules: s.business_rules }))
@@ -2001,7 +2002,7 @@ app.post('/api/admin/settings', requireAdmin, async (req, res) => {
 // Admin: detect local Ollama models (server-side probe to avoid CORS issues)
 app.get('/api/admin/detect-ollama', requireAdmin, async (req, res) => {
     // Only probe the supported Ollama endpoints for listing models and version
-    const hosts = [ '127.0.0.1', 'localhost', '::1' ];
+    const hosts = ['127.0.0.1', 'localhost', '::1'];
     const ports = [11434];
     const paths = ['/api/tags', '/api/version'];
     try {
@@ -2205,7 +2206,7 @@ if (allowPublicAdmin) {
     // Public detect-ollama endpoint (dev only)
     app.get('/api/detect-ollama', async (req, res) => {
         // Only probe the supported Ollama endpoints on localhost
-        const hosts = [ '127.0.0.1', 'localhost', '::1' ];
+        const hosts = ['127.0.0.1', 'localhost', '::1'];
         const ports = [11434];
         const paths = ['/api/tags', '/api/version'];
         try {
@@ -4047,28 +4048,28 @@ app.post('/api/api_connectors/:id/trigger', async (req, res) => {
             body = JSON.stringify(req.body);
             headers['Content-Type'] = 'application/json';
         }
-                const r = await fetch(conn.base_url, { method, headers, body });
-                const text = await r.text();
-                let parsed = null;
-                try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
-                const meta = { status: r.status, statusText: r.statusText, url: conn.base_url };
-                // Upsert behavior: update latest ingest for this connector if exists, otherwise insert
-                try {
-                    const exist = await pool.query('SELECT id FROM dqai_api_ingests WHERE connector_id = $1 ORDER BY received_at DESC LIMIT 1', [id]);
-                    if (exist.rowCount > 0) {
-                        const ingestId = exist.rows[0].id;
-                        await pool.query('UPDATE dqai_api_ingests SET raw_data = $1, metadata = $2, received_at = NOW() WHERE id = $3', [JSON.stringify(parsed), JSON.stringify(meta), ingestId]);
-                        return res.json({ ok: true, status: r.status, data: parsed, ingestId });
-                    } else {
-                        const ins = await pool.query('INSERT INTO dqai_api_ingests (connector_id, raw_data, metadata) VALUES ($1,$2,$3) RETURNING id', [id, JSON.stringify(parsed), JSON.stringify(meta)]);
-                        return res.json({ ok: true, status: r.status, data: parsed, ingestId: ins.rows[0].id });
-                    }
-                } catch (e) {
-                    console.error('Failed to upsert api_ingest', e);
-                    // fallback to insert to avoid losing data
-                    await pool.query('INSERT INTO dqai_api_ingests (connector_id, raw_data, metadata) VALUES ($1,$2,$3)', [id, JSON.stringify(parsed), JSON.stringify(meta)]);
-                    return res.json({ ok: true, status: r.status, data: parsed });
-                }
+        const r = await fetch(conn.base_url, { method, headers, body });
+        const text = await r.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
+        const meta = { status: r.status, statusText: r.statusText, url: conn.base_url };
+        // Upsert behavior: update latest ingest for this connector if exists, otherwise insert
+        try {
+            const exist = await pool.query('SELECT id FROM dqai_api_ingests WHERE connector_id = $1 ORDER BY received_at DESC LIMIT 1', [id]);
+            if (exist.rowCount > 0) {
+                const ingestId = exist.rows[0].id;
+                await pool.query('UPDATE dqai_api_ingests SET raw_data = $1, metadata = $2, received_at = NOW() WHERE id = $3', [JSON.stringify(parsed), JSON.stringify(meta), ingestId]);
+                return res.json({ ok: true, status: r.status, data: parsed, ingestId });
+            } else {
+                const ins = await pool.query('INSERT INTO dqai_api_ingests (connector_id, raw_data, metadata) VALUES ($1,$2,$3) RETURNING id', [id, JSON.stringify(parsed), JSON.stringify(meta)]);
+                return res.json({ ok: true, status: r.status, data: parsed, ingestId: ins.rows[0].id });
+            }
+        } catch (e) {
+            console.error('Failed to upsert api_ingest', e);
+            // fallback to insert to avoid losing data
+            await pool.query('INSERT INTO dqai_api_ingests (connector_id, raw_data, metadata) VALUES ($1,$2,$3)', [id, JSON.stringify(parsed), JSON.stringify(meta)]);
+            return res.json({ ok: true, status: r.status, data: parsed });
+        }
     } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
 
