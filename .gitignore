@@ -14,6 +14,7 @@ dist-ssr
 
 .server/database.sql
 .env
+server/database.sql
 
 # Editor directories and files
 .vscode/*
