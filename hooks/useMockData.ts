@@ -41,8 +41,12 @@ interface DataContextType {
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
-const API_URL = 'http://localhost:3000/api';
-const AUTH_URL = 'http://localhost:3000/auth';
+// Prefer environment-configured API base (Vite `VITE_API_URL`) to avoid hardcoding
+// `localhost:3000` which can cause CORS when the frontend is served from another host.
+// Fall back to relative paths so Vite's dev-server proxy (or same-origin production setup)
+// can route requests to the backend without CORS issues.
+const API_URL = ((import.meta as any)?.env?.VITE_API_URL) || '/api';
+const AUTH_URL = ((import.meta as any)?.env?.VITE_AUTH_URL) || '/auth';
 
 // No mock data: app must use backend Postgres for all data
 
